@@ -807,7 +807,8 @@ VISTAS.reportes = () => {
 };
 
 /* =============== Respaldo, exportación y ajustes =============== */
-function csvCelda(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+// Un texto que empieza por = + - @ (tab o CR) se interpretaría como fórmula al abrir el CSV: se neutraliza. Los números reales no se tocan.
+function csvCelda(v) { let s = String(v ?? ''); if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; }
 function csvTodo() {
   const f = [['Tipo', 'Fecha', 'Producto', 'Cantidad', 'Precio o costo', 'Total', 'Cliente', 'Pago', 'Notas']];
   ventas.forEach(v => { const p = prod(v.productoId), c = cliente(v.clienteId); f.push(['Venta', v.fecha, p ? p.name : '', v.cantidad, v.precio, v.total, c ? c.nombre : '', v.tipoPago, v.tipoPago === 'credito' ? `Abonado ${v.pagado || 0}` : '']); });
@@ -1003,22 +1004,48 @@ async function conectarSheet(url, clave) {
    La pestaña «Importar clientes» es de entrada: el dueño pega ahí sus contactos (por ejemplo, exportados de la agenda
    donde WhatsApp los guarda) y la app los trae SIN duplicar: un cliente es el mismo si coincide el teléfono (últimos 10
    dígitos) o, si no hay teléfono, el nombre sin tildes ni mayúsculas. Nunca se borra ni se pisa un dato ya escrito. */
-const sinTildes = t => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
-const claveTel = t => { const d = String(t ?? '').replace(/\D/g, ''); const s2 = d.length === 12 && d.startsWith('57') ? d.slice(2) : d; return s2.length >= 7 ? s2.slice(-10) : ''; };
+const sinTildes = t => String(t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+// Una celda con error de fórmula (#ERROR!, #REF!, #N/A…) se trata como vacía.
+const ERROR_HOJA = /^#(ERROR|REF|N\/A|VALUE|NAME|DIV\/0|NUM|NULL)[!?]?/i;
+const limpioHoja = t => { const s = String(t ?? '').trim(); return ERROR_HOJA.test(s) ? '' : s; };
+// Teléfono tal como se guarda: vacío si la celda es un error o una notación científica (3.0E+11, un número que la hoja deformó).
+const telefonoHoja = t => { const s = limpioHoja(t); return /E\+\d+$/i.test(s) ? '' : s; };
+// Clave de comparación: se corta lo que sigue a una extensión o a otro número, y se normaliza el prefijo de país.
+// Números locales (7 a 10 dígitos): tal cual. +57 (12 dígitos) equivale al local. Otro prefijo (+1…) conserva todos los dígitos: no se confunde con uno colombiano.
+const claveTel = t => {
+  const texto = telefonoHoja(t);
+  if (!texto) return '';
+  let d = texto.split(/ext|x|#|\/|;|,/i)[0].replace(/\D/g, '');
+  if (d.startsWith('00')) d = d.slice(2);
+  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+  if (d.length === 12 && d.startsWith('57')) d = d.slice(2);
+  return d.length >= 7 && d.length <= 12 ? d : '';
+};
 function combinarClientes(actuales, filas) {
   const lista = actuales.map(c => ({ ...c }));
-  const r = { agregados: 0, actualizados: 0, iguales: 0, omitidos: 0 };
+  const r = { agregados: 0, actualizados: 0, iguales: 0, omitidos: 0, ambiguos: 0 };
   const porTel = new Map(), porNombre = new Map(), ids = new Set(lista.map(c => c.id));
-  const indexar = c => { const t = claveTel(c.telefono); if (t) porTel.set(t, c); porNombre.set(sinTildes(c.nombre), c); };
+  const indexar = c => {
+    const t = claveTel(c.telefono); if (t) porTel.set(t, c);
+    const k = sinTildes(String(c.nombre ?? '')), g = porNombre.get(k) || [];
+    if (!g.includes(c)) g.push(c);
+    porNombre.set(k, g);
+  };
   const idNuevo = () => { let id; do { id = 'c' + nuevoId(); } while (ids.has(id)); ids.add(id); return id; }; // nuevoId puede repetirse dentro del mismo milisegundo
   lista.forEach(indexar);
-  for (const f of filas.slice(0, 5000)) {
-    const nombre = Array.isArray(f) ? String(f[0] ?? '').trim().slice(0, 100) : '';
+  for (const f of filas) {
+    const nombre = Array.isArray(f) ? limpioHoja(f[0]).slice(0, 100) : '';
     if (!nombre) { r.omitidos++; continue; }
-    const telefono = String(f[1] ?? '').trim().slice(0, 30), notas = String(f[2] ?? '').trim().slice(0, 300);
-    const t = claveTel(telefono), porNom = porNombre.get(sinTildes(nombre));
-    // Mismo teléfono = mismo cliente. Mismo nombre solo si alguno de los dos no tiene teléfono (dos «Juan» con teléfonos distintos son personas distintas).
-    const ex = (t && porTel.get(t)) || (porNom && (!t || !claveTel(porNom.telefono)) ? porNom : null);
+    const telefono = telefonoHoja(f[1]).slice(0, 30), notas = limpioHoja(f[2]).slice(0, 300);
+    const t = claveTel(telefono);
+    let ex = t ? porTel.get(t) : null;
+    if (!ex) {
+      // Mismo teléfono = mismo cliente. Mismo nombre solo si alguno de los dos no tiene teléfono (dos «Juan» con teléfonos distintos son personas distintas).
+      const mismos = porNombre.get(sinTildes(nombre)) || [];
+      const candidatos = t ? mismos.filter(c => !claveTel(c.telefono)) : mismos;
+      if (candidatos.length > 1) { r.ambiguos++; continue; } // no se adivina a quién pertenece: no se toca nada
+      ex = candidatos[0] || null;
+    }
     if (ex) {
       let cambio = false;
       if (!ex.telefono && telefono) { ex.telefono = telefono; cambio = true; }
@@ -1032,12 +1059,17 @@ function combinarClientes(actuales, filas) {
 async function traerClientesDelSheet() {
   if (!sync || !sync.listo) return;
   let j;
-  try { j = await llamarSheet({ accion: 'clientes' }); } catch (e) { return aviso('No se pudieron leer los clientes: ' + mensajeSync(e), true); }
+  try { j = await llamarSheet({ accion: 'clientes' }); } catch (e) {
+    if (/acci[oó]n desconocida/i.test(String((e && e.message) || e))) return aviso('Tu script es de una versión anterior: actualízalo (Implementar → Administrar implementaciones → Editar → Nueva versión)', true);
+    return aviso('No se pudieron leer los clientes: ' + mensajeSync(e), true);
+  }
   if (!j || !Array.isArray(j.filas)) return aviso('Respuesta no válida del script', true);
   const r = combinarClientes(clientes, j.filas);
-  const omitidos = r.omitidos ? ` (${r.omitidos} fila(s) sin nombre se ignoraron)` : '';
-  if (!r.agregados && !r.actualizados) return aviso(`Sin cambios: ${r.iguales} cliente(s) ya estaban${omitidos}`);
-  if (!(await confirmar({ titulo: 'Traer clientes del Sheet', texto: `Se agregarán ${r.agregados} cliente(s) nuevo(s) y se completarán los datos de ${r.actualizados}. ${r.iguales} ya estaban y no se duplican${omitidos}.`, ok: 'Traer clientes' }))) return;
+  const extra = (r.omitidos ? ` (${r.omitidos} fila(s) sin nombre se ignoraron)` : '')
+    + (r.ambiguos ? ` ${r.ambiguos} fila(s) ambiguo(s) no se tocaron: varios clientes tienen ese nombre.` : '')
+    + (j.truncado ? ` Solo se leyeron las primeras ${j.max || j.filas.length} filas: el resto no se trajo.` : '');
+  if (!r.agregados && !r.actualizados) return aviso(`Sin cambios: ${r.iguales} cliente(s) ya estaban${extra}`);
+  if (!(await confirmar({ titulo: 'Traer clientes del Sheet', texto: `Se agregarán ${r.agregados} cliente(s) nuevo(s) y se completarán los datos de ${r.actualizados}. ${r.iguales} ya estaban y no se duplican${extra}.`, ok: 'Traer clientes' }))) return;
   if (aplicar(() => { clientes = r.lista; }, `Clientes: ${r.agregados} nuevos, ${r.actualizados} actualizados`)) repintar();
 }
 
