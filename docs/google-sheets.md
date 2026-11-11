@@ -66,12 +66,12 @@ El script solo reescribe el bloque de la tabla (las columnas de cada pestaña, d
 | --- | --- |
 | Inventario | Producto · Unidad · Existencias · Costo promedio · Precio de venta · Control de frescura |
 | Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe |
-| Compras | Fecha · Producto · Cantidad · Costo unitario · Total · Vence · Días en granja · Notas |
+| Compras | Fecha · Producto · Cantidad · Panales · Costo unitario · Total · Vence · Días en granja · Notas |
 | Clientes | Cliente · Teléfono · Deuda · Notas |
 | Pérdidas | Fecha · Producto · Cantidad · Costo unitario · Motivo |
 | Importar clientes (se llena a mano) | Nombre · Teléfono · Notas / dirección |
 
-- *Cantidad* siempre está en unidades; *Panales* solo se llena cuando la venta fue por panal.
+- *Cantidad* siempre está en unidades; *Panales* solo se llena cuando la venta o la compra fue por panal.
 - Para referenciar toda una columna usa rangos abiertos (por ejemplo `Ventas!F2:F`), porque el número de filas cambia en cada envío.
 
 La plantilla se genera con `python plantilla/generar_plantilla.py` a partir de `apps-script/Code.gs`, así que siempre coincide con el script.
