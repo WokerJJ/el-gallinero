@@ -56,6 +56,6 @@ test('respaldo · una fecha de vencimiento inválida descarta la entrada, no rom
 test('lista de precios · solo productos con existencias y precio, con el precio fijo primero', () => {
   const a = cargarApp({ seed: sembrar({ products: [prod({ stock: 5, price: 600 }), leche({ stock: 0, price: 3500 }), prod({ id: 'x', name: 'Sin precio', stock: 5 })] }) });
   const t = a.run('textoListaPrecios()');
-  assert.match(t, /Huevo de Campo: \$600 por unidad/);
+  assert.match(t, /Huevo de Campo: \$18\.000 el panal de 30 \(\$600 c\/u\)/);
   assert.ok(!t.includes('Leche') && !t.includes('Sin precio'));
 });
