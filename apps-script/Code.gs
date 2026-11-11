@@ -6,6 +6,12 @@
  *   1. los guarda completos en la pestaña oculta «_respaldo» (para restaurar si cambias de celular), y
  *   2. arma pestañas legibles: Inventario, Ventas, Compras, Clientes y Pérdidas.
  * Cada envío REEMPLAZA el contenido de las pestañas: no se duplican filas aunque se envíe muchas veces.
+ *
+ * Solo se reescribe el bloque de la tabla (las columnas de cada pestaña). Lo que agregues a la derecha, o en otras
+ * pestañas (fórmulas, gráficos, un panel), no se toca. No cambies el nombre de las pestañas ni el orden de las columnas.
+ *
+ * Además, la pestaña «Importar clientes» es de entrada: tú la llenas y la app la lee (acción «clientes»).
+ * Úsala con la plantilla de Excel del proyecto (carpeta plantilla/).
  */
 
 // Escribe aquí una clave tuya (la misma que pondrás en la app). Funciona como contraseña del enlace.
@@ -29,6 +35,7 @@ function doPost(e) {
     if (p.accion === 'ping') return salida_(estado_());
     if (p.accion === 'guardar') return salida_(guardar_(p.datos));
     if (p.accion === 'leer') return salida_(leer_());
+    if (p.accion === 'clientes') return salida_(clientesImportar_());
     return salida_({ ok: false, error: 'Acción desconocida' });
   } catch (err) {
     return salida_({ ok: false, error: String((err && err.message) || err) });
@@ -55,11 +62,26 @@ function seguro_(v) {
 
 function escribirHoja_(nombre, cabecera, filas) {
   const h = hoja_(nombre);
-  h.clearContents();
-  const valores = [cabecera].concat(filas.map(function (f) { return f.map(seguro_); }));
-  h.getRange(1, 1, valores.length, cabecera.length).setValues(valores);
-  h.getRange(1, 1, 1, cabecera.length).setFontWeight('bold');
+  // Solo se limpia el bloque de datos (filas de datos, columnas de la tabla): lo demás queda como está.
+  const ultima = Math.max(h.getLastRow(), 2);
+  h.getRange(2, 1, ultima - 1, cabecera.length).clearContent();
+  const valores = filas.map(function (f) { return f.map(seguro_); });
+  if (h.getMaxRows() < valores.length + 1) h.insertRowsAfter(h.getMaxRows(), valores.length + 1 - h.getMaxRows());
+  if (h.getMaxColumns() < cabecera.length) h.insertColumnsAfter(h.getMaxColumns(), cabecera.length - h.getMaxColumns());
+  h.getRange(1, 1, 1, cabecera.length).setValues([cabecera]).setFontWeight('bold');
+  if (valores.length) h.getRange(2, 1, valores.length, cabecera.length).setValues(valores);
   h.setFrozenRows(1);
+}
+
+// Lee la pestaña «Importar clientes» (Nombre, Teléfono, Notas) tal como se ve en pantalla.
+function clientesImportar_() {
+  const h = libro_().getSheetByName('Importar clientes');
+  if (!h) return { ok: false, error: 'Falta la pestaña «Importar clientes». Usa la plantilla de Excel del proyecto.' };
+  const ultima = h.getLastRow();
+  if (ultima < 2) return { ok: true, filas: [] };
+  const filas = h.getRange(2, 1, Math.min(ultima - 1, 5000), 3).getDisplayValues()
+    .filter(function (f) { return String(f[0]).trim() !== ''; });
+  return { ok: true, filas: filas };
 }
 
 function leerTexto_(nombre) {
