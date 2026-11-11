@@ -154,9 +154,9 @@ function guardar_(d) {
       return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe];
     }));
 
-  escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas'],
+  escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas'],
     d.entradas.slice().sort(porFechaDesc).map(function (e) {
-      return [e.fecha, nombreProd(e.productoId), e.cantidad, e.costoUnitario, e.total, e.vence || '', e.diasGranja || '', e.notas || ''];
+      return [e.fecha, nombreProd(e.productoId), e.cantidad, e.panales || '', e.costoUnitario, e.total, e.vence || '', e.diasGranja || '', e.notas || ''];
     }));
 
   escribirHoja_('Clientes', ['Cliente', 'Teléfono', 'Deuda', 'Notas'],
