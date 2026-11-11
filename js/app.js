@@ -69,6 +69,7 @@ const SANEAR = {
     const cantidad = rNum(r.cantidad), costoUnitario = rNum(r.costoUnitario, 0);
     const o = { id: rId(r.id), productoId: rSid(r.productoId), cantidad, costoUnitario, total: rNum(r.total, cantidad * costoUnitario), fecha: rFecha(r.fecha), diasGranja: rNum(r.diasGranja, 0), notas: rTxt(r.notas) };
     if (r.vence != null && r.vence !== '') o.vence = rFecha(r.vence);
+    if (r.panales != null) { o.panales = rNum(r.panales); o.costoPanal = rNum(r.costoPanal, 0); }
     if (r.costoPrevio != null) o.costoPrevio = rNum(r.costoPrevio);
     if (r.lastCostPrevio != null) o.lastCostPrevio = rNum(r.lastCostPrevio);
     return o;
@@ -504,9 +505,13 @@ VISTAS.comprar = () => {
     ${cabecera('Llegó mercancía')}
     <form id="f-entrada" class="card" novalidate>
       <label class="field"><span>Producto</span><select id="e-prod">${opcionesProductos(products[0] && products[0].id)}</select><div class="hint" id="e-hint"></div></label>
+      <div class="seg" id="e-uni-box" role="radiogroup" aria-label="Llega por" hidden>
+        <label><input type="radio" name="euni" value="panal" checked><span id="e-uni-panal">Por panal</span></label>
+        <label><input type="radio" name="euni" value="unidad"><span>Por unidad</span></label>
+      </div>
       <div class="row2">
-        <label class="field"><span>Cantidad</span><input id="e-cant" type="number" inputmode="numeric" min="1" step="1" placeholder="0"></label>
-        <label class="field"><span>Costo por unidad</span><input id="e-costo" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
+        <label class="field"><span id="e-cant-lbl">Cantidad</span><input id="e-cant" type="number" inputmode="numeric" min="1" step="1" placeholder="0"></label>
+        <label class="field"><span id="e-costo-lbl">Costo por unidad</span><input id="e-costo" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
       </div>
       <button type="button" class="btn btn-sm btn-ghost" id="e-usar" style="margin:-4px 0 14px">Usar el precio de la vez anterior</button>
       <div class="total-line"><span>Total a pagar</span><strong id="e-total">$0</strong></div>
@@ -519,33 +524,48 @@ VISTAS.comprar = () => {
       <button class="btn btn-teal btn-big" type="submit">Guardar entrada</button>
     </form>
     <section class="card"><h3>Últimas entradas</h3>
-      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${num(e.cantidad)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${money(e.costoUnitario)} c/u${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
+      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${e.panales != null ? money(e.costoPanal) + ' c/panal' : money(e.costoUnitario) + ' c/u'}${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
 };
 MONTAR.comprar = () => {
   const f = $('#f-entrada');
+  // Los huevos pueden llegar por panal o por unidad; lo demás, solo por unidad. El inventario siempre se lleva en unidades.
+  const modo = () => { const p = prod($('#e-prod').value), r = f.querySelector('input[name=euni]:checked'); return p && p.panal > 0 && r && r.value === 'panal' ? 'panal' : 'unidad'; };
+  const factor = () => { const p = prod($('#e-prod').value); return p && modo() === 'panal' ? p.panal : 1; };
+  const ajustarUnidad = () => {
+    const p = prod($('#e-prod').value), m = modo();
+    $('#e-uni-box').hidden = !(p && p.panal > 0);
+    if (p && p.panal > 0) $('#e-uni-panal').textContent = `Por panal (${p.panal})`;
+    $('#e-cant-lbl').textContent = m === 'panal' ? 'Panales' : 'Cantidad';
+    $('#e-costo-lbl').textContent = m === 'panal' ? 'Costo por panal' : 'Costo por unidad';
+  };
   const pista = () => {
-    const p = prod($('#e-prod').value);
+    const p = prod($('#e-prod').value), k = factor();
     const ultimo = p && (p.lastCost || p.cost);
-    $('#e-hint').textContent = ultimo ? `Última vez pagaste ${money(ultimo)} por unidad.` : '';
+    ajustarUnidad();
+    $('#e-hint').textContent = ultimo ? `Última vez pagaste ${money(ultimo * k)} por ${k > 1 ? 'panal' : 'unidad'}.` : '';
     $('#e-usar').hidden = !ultimo;
     // El formulario se adapta al producto: huevos piden días en granja, empacados piden fecha de vencimiento.
     $('#e-b-granja').hidden = !p || p.control !== 'granja';
     $('#e-b-vence').hidden = !p || p.control !== 'vencimiento';
   };
   const calc = () => { $('#e-total').textContent = money((parseFloat($('#e-cant').value) || 0) * (parseFloat($('#e-costo').value) || 0)); };
-  $('#e-prod').addEventListener('change', pista);
+  $('#e-prod').addEventListener('change', () => { const r = f.querySelector('input[name=euni][value=panal]'); if (r) r.checked = true; pista(); });
+  f.querySelectorAll('input[name=euni]').forEach(r => r.addEventListener('change', pista));
   f.addEventListener('input', calc);
-  $('#e-usar').addEventListener('click', () => { const p = prod($('#e-prod').value); if (p) { $('#e-costo').value = p.lastCost || p.cost; calc(); aviso('Precio anterior aplicado'); } });
+  $('#e-usar').addEventListener('click', () => { const p = prod($('#e-prod').value); if (p) { $('#e-costo').value = Math.round((p.lastCost || p.cost) * factor() * 100) / 100; calc(); aviso('Precio anterior aplicado'); } });
   pista();
   f.addEventListener('submit', e => {
     e.preventDefault();
     const p = prod($('#e-prod').value);
-    const cantidad = leerNum($('#e-cant').value), costo = leerNum($('#e-costo').value), fecha = $('#e-fecha').value;
+    const k = factor(), enPanal = modo() === 'panal';
+    const n = leerNum($('#e-cant').value), costoIn = leerNum($('#e-costo').value), fecha = $('#e-fecha').value;
+    const cantidad = n * k; // unidades que entran a la bodega
     if (!p) return aviso('Elige un producto', true);
     const diasGranja = p.control === 'granja' ? Math.min(30, Math.max(0, parseInt($('#e-dias').value, 10) || 0)) : 0;
     const vence = p.control === 'vencimiento' ? $('#e-vence').value : '';
-    if (!(Number.isInteger(cantidad) && enRango(cantidad, 1))) return aviso('La cantidad debe ser un número entero mayor que cero', true);
-    if (!enRango(costo)) return aviso('Escribe el costo por unidad (un número razonable)', true);
+    if (!(Number.isInteger(n) && enRango(n, 1) && enRango(cantidad, 1))) return aviso(enPanal ? 'Los panales deben ser un número entero mayor que cero' : 'La cantidad debe ser un número entero mayor que cero', true);
+    if (!enRango(costoIn)) return aviso(`Escribe el costo por ${enPanal ? 'panal' : 'unidad'} (un número razonable)`, true);
+    const total = n * costoIn, costo = total / cantidad; // el total es exacto aunque el costo por unidad no lo sea
     if (!fechaOk(fecha)) return aviso('Falta la fecha', true);
     if (p.control === 'vencimiento' && !fechaOk(vence)) return aviso('Escribe la fecha de vencimiento', true);
     if (vence && vence < fecha) return aviso('La fecha de vencimiento es anterior a la llegada', true);
@@ -555,8 +575,8 @@ MONTAR.comprar = () => {
       p.stock = stockPrevio + cantidad;
       p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 100) / 100 : costo;
       p.lastCost = costo;
-      entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total: cantidad * costo, fecha, diasGranja, ...(vence ? { vence } : {}), notas, costoPrevio, lastCostPrevio });
-    }, `Entrada guardada · ${num(cantidad)} ${p.name}`);
+      entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), notas, costoPrevio, lastCostPrevio });
+    }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}`);
     repintar();
   });
 };
