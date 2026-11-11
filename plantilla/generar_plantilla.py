@@ -2,13 +2,17 @@
 
 Uso (requiere `pip install openpyxl`):
 
-    python plantilla/generar_plantilla.py
+    python plantilla/generar_plantilla.py          # genera plantilla/El-Gallinero-plantilla.xlsx
+    python plantilla/generar_plantilla.py --check  # falla (código 1) si el .xlsx versionado no coincide con Code.gs
 
 Las pestañas y columnas salen de apps-script/Code.gs (única fuente de verdad), así que la plantilla
 nunca se desincroniza del script que escribe los datos. Si cambias las columnas en Code.gs, vuelve a generar.
 """
 import re
+import io
 import sys
+import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -19,6 +23,7 @@ from openpyxl.utils import get_column_letter
 RAIZ = Path(__file__).resolve().parent.parent
 SALIDA = RAIZ / "plantilla" / "El-Gallinero-plantilla.xlsx"
 VERSION_PLANTILLA = 1
+FECHA_FIJA = datetime(2026, 1, 1)  # fecha constante en las propiedades: el binario es reproducible
 FILAS = 2000  # filas con formato listo (la hoja crece sola si hay más datos)
 
 # Paleta del logo
@@ -42,14 +47,18 @@ ANCHOS = {
 
 
 def leer_contrato():
-    """Pestañas y cabeceras tal como las escribe Code.gs."""
+    """Pestañas y cabeceras tal como las escribe Code.gs: (pestañas espejo, cabecera de «Importar clientes»)."""
     codigo = (RAIZ / "apps-script" / "Code.gs").read_text(encoding="utf-8")
     contrato = []
     for nombre, cab in re.findall(r"escribirHoja_\('([^']+)',\s*\[([^\]]*)\]", codigo):
         contrato.append((nombre, re.findall(r"'([^']*)'", cab)))
     if not contrato:
         sys.exit("No encontré las pestañas en apps-script/Code.gs")
-    return contrato
+    m = re.search(r"const HOJA_IMPORTAR\s*=\s*\[([^\]]*)\]", codigo)
+    importar = re.findall(r"'([^']*)'", m.group(1)) if m else []
+    if not importar:
+        sys.exit("No encontré HOJA_IMPORTAR en apps-script/Code.gs")
+    return contrato, importar
 
 
 def borde():
@@ -89,14 +98,6 @@ def formato_cuerpo(ws, cabecera):
     )
 
 
-def resaltar(ws, cabecera, nombre_col, regla, fondo, texto="8A2A1B"):
-    col = get_column_letter(cabecera.index(nombre_col) + 1)
-    rango = f"{col}2:{col}{FILAS + 1}"
-    ws.conditional_formatting.add(
-        rango, regla(f"{col}2") if callable(regla) else regla
-    )
-
-
 def hoja_datos(wb, nombre, cabecera):
     ws = wb.create_sheet(nombre)
     ws.sheet_properties.tabColor = VERDE
@@ -125,12 +126,11 @@ def hoja_datos(wb, nombre, cabecera):
     return ws
 
 
-def hoja_importar_clientes(wb):
-    cab = ["Nombre", "Teléfono", "Notas / dirección"]
+def hoja_importar_clientes(wb, cab):
     ws = wb.create_sheet("Importar clientes")
     ws.sheet_properties.tabColor = NARANJA
     estilo_cabecera(ws, cab, NARANJA, TINTA)
-    for c, ancho in zip("ABC", (32, 20, 38)):
+    for c, ancho in zip("ABC", (32, 20, 38)):  # las tres columnas de HOJA_IMPORTAR
         ws.column_dimensions[c].width = ancho
     for r in range(2, FILAS + 2):
         for c in range(1, 4):
@@ -157,7 +157,7 @@ def hoja_importar_clientes(wb):
     return ws
 
 
-def hoja_instrucciones(wb, contrato):
+def hoja_instrucciones(wb, contrato, importar):
     ws = wb.active
     ws.title = "Instrucciones"
     ws.sheet_properties.tabColor = SOL
@@ -214,7 +214,7 @@ def hoja_instrucciones(wb, contrato):
         cab.font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
         cab.fill = PatternFill("solid", fgColor=VERDE)
         cab.alignment = Alignment(indent=1)
-    filas = [("Importar clientes", "Tú", "Sí", "Nombre · Teléfono · Notas / dirección")]
+    filas = [("Importar clientes", "Tú", "Sí", " · ".join(importar))]
     filas += [(n, "La app", "No", " · ".join(cab)) for n, cab in contrato]
     for i, (a, b, c_, d) in enumerate(filas):
         for col, valor in enumerate((a, b, c_, d), start=1):
@@ -227,17 +227,76 @@ def hoja_instrucciones(wb, contrato):
         ws.row_dimensions[18 + i].height = 30
 
 
-def main():
-    contrato = leer_contrato()
+def construir():
+    """Arma el libro completo en memoria a partir del contrato de Code.gs."""
+    contrato, importar = leer_contrato()
     wb = Workbook()
-    hoja_instrucciones(wb, contrato)
-    hoja_importar_clientes(wb)
+    hoja_instrucciones(wb, contrato, importar)
+    hoja_importar_clientes(wb, importar)
     for nombre, cab in contrato:
         hoja_datos(wb, nombre, cab)
     wb.properties.title = "El Gallinero · plantilla"
     wb.properties.creator = "El Gallinero"
+    wb.properties.created = FECHA_FIJA
+    wb.properties.modified = FECHA_FIJA
+    return wb, contrato, importar
+
+
+def cabeceras(wb):
+    """{pestaña: valores de la fila 1} (sin celdas vacías al final)."""
+    resultado = {}
+    for ws in wb.worksheets:
+        fila = [c.value for c in ws[1]]
+        while fila and fila[-1] is None:
+            fila.pop()
+        resultado[ws.title] = fila
+    return resultado
+
+
+def comprobar():
+    """Compara las pestañas y cabeceras del .xlsx versionado con las que saldrían de Code.gs."""
+    from openpyxl import load_workbook
+
+    esperado, _, _ = construir()
+    if not SALIDA.exists():
+        print(f"Falta {SALIDA}", file=sys.stderr)
+        return 1
+    actual = load_workbook(SALIDA)
+    a, e = cabeceras(actual), cabeceras(esperado)
+    if a == e:
+        print("La plantilla coincide con apps-script/Code.gs")
+        return 0
+    print("La plantilla NO coincide con apps-script/Code.gs; vuelve a generarla con `python plantilla/generar_plantilla.py`.", file=sys.stderr)
+    for nombre in sorted(set(a) | set(e)):
+        if a.get(nombre) != e.get(nombre):
+            print(f"  {nombre}: plantilla={a.get(nombre)} · Code.gs={e.get(nombre)}", file=sys.stderr)
+    return 1
+
+
+def guardar_reproducible(wb, destino):
+    """Guarda el libro con la fecha de cada entrada del zip fija: el mismo contrato produce el mismo binario."""
+    memoria = io.BytesIO()
+    wb.save(memoria)
+    memoria.seek(0)
+    with zipfile.ZipFile(memoria) as origen, zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as nuevo:
+        for info in origen.infolist():
+            entrada = zipfile.ZipInfo(info.filename, date_time=FECHA_FIJA.timetuple()[:6])
+            entrada.compress_type = zipfile.ZIP_DEFLATED
+            entrada.external_attr = info.external_attr
+            datos = origen.read(info.filename)
+            if info.filename == "docProps/core.xml":
+                # openpyxl pone la hora actual en «modified» al guardar: se vuelve a fijar.
+                fija = FECHA_FIJA.strftime("%Y-%m-%dT%H:%M:%SZ").encode()
+                datos = re.sub(rb"(<dcterms:modified[^>]*>)[^<]*", rb"\g<1>" + fija, datos)
+            nuevo.writestr(entrada, datos)
+
+
+def main():
+    if "--check" in sys.argv[1:]:
+        sys.exit(comprobar())
+    wb, contrato, _ = construir()
     SALIDA.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(SALIDA)
+    guardar_reproducible(wb, SALIDA)
     print(f"Plantilla creada: {SALIDA}")
     for nombre, cab in contrato:
         print(f"  {nombre}: {' | '.join(cab)}")
