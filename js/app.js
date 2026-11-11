@@ -568,6 +568,7 @@ VISTAS.clientes = () => `
   <div class="card">
     <label class="field"><span>Buscar</span><input id="c-buscar" type="search" placeholder="Nombre del cliente" value="${esc(filtroCliente)}" autocomplete="off"></label>
     <button class="btn btn-teal" data-act="cliente-nuevo">+ Nuevo cliente</button>
+    ${sync && sync.listo ? '<div class="btn-row"><button class="btn btn-ghost" data-act="sheets-clientes">Traer clientes del Sheet</button></div>' : ''}
   </div>
   <div id="c-lista"></div>`;
 function listaClientes() {
@@ -998,6 +999,48 @@ async function conectarSheet(url, clave) {
   if (vistaActual === 'sheets') repintar();
 }
 
+/* ---- Clientes que llegan desde el Sheet ----
+   La pestaña «Importar clientes» es de entrada: el dueño pega ahí sus contactos (por ejemplo, exportados de la agenda
+   donde WhatsApp los guarda) y la app los trae SIN duplicar: un cliente es el mismo si coincide el teléfono (últimos 10
+   dígitos) o, si no hay teléfono, el nombre sin tildes ni mayúsculas. Nunca se borra ni se pisa un dato ya escrito. */
+const sinTildes = t => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+const claveTel = t => { const d = String(t ?? '').replace(/\D/g, ''); const s2 = d.length === 12 && d.startsWith('57') ? d.slice(2) : d; return s2.length >= 7 ? s2.slice(-10) : ''; };
+function combinarClientes(actuales, filas) {
+  const lista = actuales.map(c => ({ ...c }));
+  const r = { agregados: 0, actualizados: 0, iguales: 0, omitidos: 0 };
+  const porTel = new Map(), porNombre = new Map(), ids = new Set(lista.map(c => c.id));
+  const indexar = c => { const t = claveTel(c.telefono); if (t) porTel.set(t, c); porNombre.set(sinTildes(c.nombre), c); };
+  const idNuevo = () => { let id; do { id = 'c' + nuevoId(); } while (ids.has(id)); ids.add(id); return id; }; // nuevoId puede repetirse dentro del mismo milisegundo
+  lista.forEach(indexar);
+  for (const f of filas.slice(0, 5000)) {
+    const nombre = Array.isArray(f) ? String(f[0] ?? '').trim().slice(0, 100) : '';
+    if (!nombre) { r.omitidos++; continue; }
+    const telefono = String(f[1] ?? '').trim().slice(0, 30), notas = String(f[2] ?? '').trim().slice(0, 300);
+    const t = claveTel(telefono), porNom = porNombre.get(sinTildes(nombre));
+    // Mismo teléfono = mismo cliente. Mismo nombre solo si alguno de los dos no tiene teléfono (dos «Juan» con teléfonos distintos son personas distintas).
+    const ex = (t && porTel.get(t)) || (porNom && (!t || !claveTel(porNom.telefono)) ? porNom : null);
+    if (ex) {
+      let cambio = false;
+      if (!ex.telefono && telefono) { ex.telefono = telefono; cambio = true; }
+      if (!ex.notas && notas) { ex.notas = notas; cambio = true; }
+      indexar(ex);
+      if (cambio) r.actualizados++; else r.iguales++;
+    } else { const c = { id: idNuevo(), nombre, telefono, notas }; lista.push(c); indexar(c); r.agregados++; }
+  }
+  return { lista, ...r };
+}
+async function traerClientesDelSheet() {
+  if (!sync || !sync.listo) return;
+  let j;
+  try { j = await llamarSheet({ accion: 'clientes' }); } catch (e) { return aviso('No se pudieron leer los clientes: ' + mensajeSync(e), true); }
+  if (!j || !Array.isArray(j.filas)) return aviso('Respuesta no válida del script', true);
+  const r = combinarClientes(clientes, j.filas);
+  const omitidos = r.omitidos ? ` (${r.omitidos} fila(s) sin nombre se ignoraron)` : '';
+  if (!r.agregados && !r.actualizados) return aviso(`Sin cambios: ${r.iguales} cliente(s) ya estaban${omitidos}`);
+  if (!(await confirmar({ titulo: 'Traer clientes del Sheet', texto: `Se agregarán ${r.agregados} cliente(s) nuevo(s) y se completarán los datos de ${r.actualizados}. ${r.iguales} ya estaban y no se duplican${omitidos}.`, ok: 'Traer clientes' }))) return;
+  if (aplicar(() => { clientes = r.lista; }, `Clientes: ${r.agregados} nuevos, ${r.actualizados} actualizados`)) repintar();
+}
+
 VISTAS.sheets = () => `
   ${cabecera('Google Sheets', 'mas')}
   ${sync && sync.listo ? `
@@ -1005,6 +1048,7 @@ VISTAS.sheets = () => `
     <p class="muted" style="margin-bottom:12px" id="sync-estado"></p>
     <p class="muted" style="margin-bottom:12px">Enlace: ${esc(sync.url.slice(0, 46))}…</p>
     <button class="btn btn-teal" data-act="sheets-enviar">Enviar ahora</button>
+    <div class="btn-row"><button class="btn btn-ghost" data-act="sheets-clientes">Traer clientes del Sheet</button></div>
     <div class="btn-row"><button class="btn btn-ghost" data-act="sheets-restaurar">Restaurar desde el Sheet</button></div>
     <div class="btn-row"><button class="btn btn-ghost" data-act="sheets-desconectar">Desconectar</button></div>
   </div>` : `
@@ -1078,6 +1122,7 @@ const ACCIONES = {
   'lista-precios': () => listaPrecios(),
   'sheets-enviar': () => enviarSheet(true),
   'sheets-restaurar': () => traerDelSheet(),
+  'sheets-clientes': () => traerClientesDelSheet(),
   'sheets-desconectar': async () => {
     if (!(await confirmar({ titulo: 'Desconectar', texto: 'La app deja de enviar datos al Sheet. Lo que ya está en el Sheet no se borra.', ok: 'Desconectar' }))) return;
     clearTimeout(syncTimer); sync = null; guardarSync(); aviso('Desconectado'); repintar();
@@ -1092,6 +1137,7 @@ const ACCIONES = {
     <li>En la primera línea cambia <strong>CAMBIA-ESTA-CLAVE</strong> por una clave tuya y anótala.</li>
     <li><strong>Implementar → Nueva implementación → Aplicación web</strong>. Ejecutar como <strong>Yo</strong>; acceso: <strong>Cualquier persona</strong>. Autoriza los permisos.</li>
     <li>Copia la URL que termina en <strong>/exec</strong>, pégala aquí con la clave y pulsa Conectar.</li></ol>
+    <p class="muted" style="margin-top:10px">Tip: si usas la plantilla de Excel del proyecto, ya trae las pestañas listas, incluida «Importar clientes» para pegar tus contactos.</p>
     <p class="muted" style="margin-top:10px">La URL y la clave son como una contraseña: no las compartas.</p>`),
   'lp-copiar': async () => {
     const t = $('#lp-texto'); if (!t) return;
