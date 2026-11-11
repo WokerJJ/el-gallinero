@@ -9,6 +9,8 @@
  *
  * Solo se reescribe el bloque de la tabla (las columnas de cada pestaña). Lo que agregues a la derecha, o en otras
  * pestañas (fórmulas, gráficos, un panel), no se toca. No cambies el nombre de las pestañas ni el orden de las columnas.
+ * IMPORTANTE: debajo de las tablas espejo no pongas nada en esas mismas columnas (totales, notas): cada envío limpia
+ * todas las filas de la pestaña, de la 2 hasta el final, solo en las columnas de la tabla.
  *
  * Además, la pestaña «Importar clientes» es de entrada: tú la llenas y la app la lee (acción «clientes»).
  * Úsala con la plantilla de Excel del proyecto (carpeta plantilla/).
@@ -16,6 +18,10 @@
 
 // Escribe aquí una clave tuya (la misma que pondrás en la app). Funciona como contraseña del enlace.
 const CLAVE = 'CAMBIA-ESTA-CLAVE';
+
+// «Importar clientes»: columnas de entrada (la plantilla de Excel se genera a partir de esta lista).
+const HOJA_IMPORTAR = ['Nombre', 'Teléfono', 'Notas / dirección'];
+const MAX_CLIENTES = 5000; // tope de filas con nombre que se entregan a la app en una lectura
 
 const TROZO = 40000; // una celda admite 50.000 caracteres; se parte el respaldo en trozos
 
@@ -62,26 +68,33 @@ function seguro_(v) {
 
 function escribirHoja_(nombre, cabecera, filas) {
   const h = hoja_(nombre);
-  // Solo se limpia el bloque de datos (filas de datos, columnas de la tabla): lo demás queda como está.
-  const ultima = Math.max(h.getLastRow(), 2);
-  h.getRange(2, 1, ultima - 1, cabecera.length).clearContent();
   const valores = filas.map(function (f) { return f.map(seguro_); });
+  // Primero se asegura que la pestaña tenga filas y columnas suficientes: pedir un rango fuera de ella lanza error.
   if (h.getMaxRows() < valores.length + 1) h.insertRowsAfter(h.getMaxRows(), valores.length + 1 - h.getMaxRows());
   if (h.getMaxColumns() < cabecera.length) h.insertColumnsAfter(h.getMaxColumns(), cabecera.length - h.getMaxColumns());
+  // Solo se limpia el bloque de datos (de la fila 2 al final de la pestaña, columnas de la tabla): lo demás queda como está.
+  if (h.getMaxRows() > 1) h.getRange(2, 1, h.getMaxRows() - 1, cabecera.length).clearContent();
   h.getRange(1, 1, 1, cabecera.length).setValues([cabecera]).setFontWeight('bold');
   if (valores.length) h.getRange(2, 1, valores.length, cabecera.length).setValues(valores);
   h.setFrozenRows(1);
 }
 
 // Lee la pestaña «Importar clientes» (Nombre, Teléfono, Notas) tal como se ve en pantalla.
+// Se leen todas las filas, se descartan las que no tienen nombre y solo entonces se aplica el tope (MAX_CLIENTES).
 function clientesImportar_() {
-  const h = libro_().getSheetByName('Importar clientes');
-  if (!h) return { ok: false, error: 'Falta la pestaña «Importar clientes». Usa la plantilla de Excel del proyecto.' };
+  const libro = libro_();
+  let h = libro.getSheetByName('Importar clientes');
+  if (!h) {
+    h = libro.insertSheet('Importar clientes');
+    h.getRange(1, 1, 1, HOJA_IMPORTAR.length).setValues([HOJA_IMPORTAR]).setFontWeight('bold');
+    h.setFrozenRows(1);
+    return { ok: true, filas: [], truncado: false, max: MAX_CLIENTES, creada: true };
+  }
   const ultima = h.getLastRow();
-  if (ultima < 2) return { ok: true, filas: [] };
-  const filas = h.getRange(2, 1, Math.min(ultima - 1, 5000), 3).getDisplayValues()
+  if (ultima < 2) return { ok: true, filas: [], truncado: false, max: MAX_CLIENTES };
+  const conNombre = h.getRange(2, 1, ultima - 1, HOJA_IMPORTAR.length).getDisplayValues()
     .filter(function (f) { return String(f[0]).trim() !== ''; });
-  return { ok: true, filas: filas };
+  return { ok: true, filas: conNombre.slice(0, MAX_CLIENTES), truncado: conNombre.length > MAX_CLIENTES, max: MAX_CLIENTES };
 }
 
 function leerTexto_(nombre) {
