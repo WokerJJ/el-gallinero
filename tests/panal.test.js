@@ -69,3 +69,70 @@ test('panal · unidades por panal fuera de rango descartan el producto al restau
   const a = cargarApp({ seed: sembrar({ products: [huevo({ panal: 5000 })] }) });
   assert.equal(a.run('products.length'), 11, 'queda el catálogo base, no un producto inválido');
 });
+
+/* ---------- Compras por panal ---------- */
+async function comprar(a, { id = 'campo', cant, costo, modo = 'panal', fecha = '2026-11-11' }) {
+  a.ir('comprar');
+  a.q('#e-prod').value = id; a.q('#e-cant').value = String(cant); a.q('#e-costo').value = String(costo);
+  a.q('#e-fecha').value = fecha; a.q('#e-dias').value = '2'; a.q('#e-vence').value = ''; a.q('#e-notas').value = '';
+  const f = a.q('#f-entrada');
+  f._q['input[name=euni]:checked'] = { value: modo };
+  await f.listeners.submit[0]({ preventDefault() {} });
+  await esperar();
+}
+
+test('panal · comprar 10 panales mete 300 unidades al stock y el total es exacto', async () => {
+  const a = cargarApp({ seed: sembrar({ products: [huevo({ stock: 0, cost: 0 })] }) });
+  await comprar(a, { cant: 10, costo: 12500 });
+  const e = a.ev('entradas[0]');
+  assert.equal(e.cantidad, 300);
+  assert.equal(e.panales, 10);
+  assert.equal(e.costoPanal, 12500);
+  assert.equal(e.total, 125000, 'el total no arrastra decimales del costo por unidad');
+  assert.equal(a.run('products[0].stock'), 300);
+  assert.equal(Math.round(a.run('products[0].cost') * 100) / 100, 416.67, 'costo promedio por unidad');
+});
+
+test('panal · comprar «por unidad» un huevo no guarda campos de panal', async () => {
+  const a = cargarApp({ seed: sembrar({ products: [huevo({ stock: 0, cost: 0 })] }) });
+  await comprar(a, { cant: 60, costo: 400, modo: 'unidad' });
+  const e = a.ev('entradas[0]');
+  assert.equal(e.cantidad, 60);
+  assert.equal(e.panales, undefined);
+});
+
+test('panal · un producto sin panal (leche) se compra siempre por unidad', async () => {
+  const a = cargarApp({ seed: sembrar({ products: [leche({ stock: 0 })] }) });
+  a.ir('comprar');
+  a.q('#e-prod').value = 'leche'; a.q('#e-cant').value = '12'; a.q('#e-costo').value = '3000';
+  a.q('#e-fecha').value = '2026-11-11'; a.q('#e-dias').value = '0'; a.q('#e-vence').value = '2026-12-01'; a.q('#e-notas').value = '';
+  const f = a.q('#f-entrada');
+  f._q['input[name=euni]:checked'] = { value: 'panal' };
+  await f.listeners.submit[0]({ preventDefault() {} });
+  await esperar();
+  const e = a.ev('entradas[0]');
+  assert.equal(e.cantidad, 12);
+  assert.equal(e.panales, undefined);
+});
+
+test('panal · una compra por panal sobrevive a guardar y recargar, y se lista en panales', async () => {
+  const a = cargarApp({ seed: sembrar({ products: [huevo({ stock: 0, cost: 0 })] }) });
+  await comprar(a, { cant: 4, costo: 12000 });
+  const b = a.recargar();
+  assert.equal(b.run('entradas[0].panales'), 4);
+  assert.equal(b.run('entradas[0].costoPanal'), 12000);
+  assert.match(b.run('VISTAS.comprar()'), /4 panales × Huevo de Campo/);
+  assert.match(b.run('VISTAS.comprar()'), /\$12\.000 c\/panal/);
+});
+
+test('panal · anular una compra por panal devuelve el stock y deja el costo como estaba', async () => {
+  const a = cargarApp({ seed: sembrar({ products: [huevo({ stock: 0, cost: 0 })] }) });
+  await comprar(a, { cant: 2, costo: 12000 });
+  const id = a.run('entradas[0].id');
+  const p = a.run(`ACCIONES['entrada-anular']({ dataset: { id: '${id}' } })`);
+  await esperar(30);
+  await require('./arnes').responder(a, true);
+  await p;
+  assert.equal(a.run('entradas.length'), 0);
+  assert.equal(a.run('products[0].stock'), 0);
+});
