@@ -824,7 +824,11 @@ function importarJSON(archivo) {
 VISTAS.respaldo = () => `
   ${cabecera('Respaldo y datos', 'mas')}
   <div class="card"><h3>Copia de seguridad</h3>
-    <p class="muted" style="margin-bottom:12px">Los datos están solo en este teléfono. Si borras el navegador o pierdes el celular, se pierden. Guarda una copia seguido y envíatela por WhatsApp o correo.</p>
+    ${sync && sync.listo
+      ? `<p class="muted" style="margin-bottom:12px">Tus datos se copian automáticamente a tu Google Sheet, y desde ahí se pueden restaurar si pierdes el celular. Aun así, guarda un respaldo de vez en cuando.</p>
+         <button class="btn btn-sm btn-ghost" data-act="ir" data-v="sheets" style="margin-bottom:14px">Ver Google Sheets</button>`
+      : `<p class="muted" style="margin-bottom:12px">Los datos están solo en este teléfono. Si borras el navegador o pierdes el celular, se pierden. Conecta un Google Sheet para que se copien solos, o guarda una copia seguido y envíatela por WhatsApp o correo.</p>
+         <button class="btn btn-sm btn-ghost" data-act="ir" data-v="sheets" style="margin-bottom:14px">Conectar Google Sheets</button>`}
     <p style="margin-bottom:12px" id="almacen-estado"><strong>Almacenamiento:</strong> comprobando…</p>
     <p style="margin-bottom:12px"><strong>Último respaldo:</strong> ${config.ultimoRespaldo ? verFecha(config.ultimoRespaldo) : 'nunca'}</p>
     <button class="btn btn-teal" data-act="json-export">Guardar respaldo</button>

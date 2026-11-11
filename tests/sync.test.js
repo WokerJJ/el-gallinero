@@ -121,3 +121,14 @@ test('Sheets · el script copia las pestañas sin fórmulas peligrosas y exige l
   assert.match(codigo, /p\.clave !== CLAVE/);
   assert.match(codigo, /CAMBIA-ESTA-CLAVE/);
 });
+
+test('Respaldo · la pantalla menciona Google Sheets, conectado o no', () => {
+  const sin = cargarApp({ seed: sembrar() });
+  const t1 = sin.run('VISTAS.respaldo()');
+  assert.match(t1, /Conecta un Google Sheet/);
+  assert.match(t1, /Conectar Google Sheets/);
+  const con = cargarApp({ seed: { ...sembrar(), eg_sync: { url: URL_OK, clave: 'k-clave', listo: true, pendiente: false, ultimo: null, error: '' } } });
+  const t2 = con.run('VISTAS.respaldo()');
+  assert.match(t2, /se copian automáticamente a tu Google Sheet/);
+  assert.match(t2, /Ver Google Sheets/);
+});
