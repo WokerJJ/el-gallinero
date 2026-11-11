@@ -113,10 +113,10 @@ function guardar_(d) {
   escribirHoja_('Inventario', ['Producto', 'Unidad', 'Existencias', 'Costo promedio', 'Precio de venta', 'Control de frescura'],
     d.products.map(function (p) { return [p.name, p.unit, p.stock, p.cost, p.price || '', p.control || '']; }));
 
-  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe'],
+  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe'],
     d.ventas.slice().sort(porFechaDesc).map(function (v) {
       const debe = v.tipoPago === 'credito' ? Math.max(0, v.total - (v.pagado || 0)) : 0;
-      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe];
+      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe];
     }));
 
   escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas'],
