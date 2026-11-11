@@ -26,6 +26,7 @@ El teléfono sigue siendo la fuente de los datos: el Sheet es un espejo. Si se c
 - Si más adelante cambias el script, vuelve a **Implementar → Administrar implementaciones → Editar → Nueva versión**, o la app seguirá usando la versión anterior.
 - Pestañas que verás: **Inventario, Ventas, Compras, Clientes, Pérdidas**. Las pestañas `_respaldo` y `_respaldo_anterior` están ocultas y guardan la copia completa; no las borres.
 - **No edites las pestañas legibles a mano:** se reescriben en cada envío. Los cambios se hacen en la app.
+- **Nada debajo de las tablas:** cada envío limpia todas las filas de la pestaña (de la 2 al final) en las columnas de la tabla. Totales o notas ponlos a la derecha o en otra pestaña.
 - Es una copia de un solo sentido (teléfono → Sheet). Si usas **dos teléfonos a la vez**, el último que envíe gana: para eso habría que construir una sincronización bidireccional.
 - **Restaurar:** en un teléfono nuevo, conecta el mismo enlace y la app ofrece traer los datos del Sheet.
 
@@ -34,8 +35,21 @@ El teléfono sigue siendo la fuente de los datos: el Sheet es un espejo. Si se c
 WhatsApp no deja exportar la lista de clientes: los clientes son los **contactos guardados en el teléfono**. La ruta es sacarlos de la agenda y pegarlos en la plantilla:
 
 1. **Contactos a un archivo.** En Android (o un iPhone con los contactos en Google): [contacts.google.com](https://contacts.google.com) → seleccionar → *Exportar* → *CSV de Google*. En un iPhone sin Google: [icloud.com](https://www.icloud.com) → Contactos → seleccionar todos → *Exportar vCard*, súbelo en contacts.google.com (*Importar*) y expórtalo como CSV.
-2. Abre el CSV en Hojas de cálculo y copia **nombre** y **teléfono** a la pestaña **Importar clientes** de la plantilla (columnas A y B, desde la fila 2). Las notas o la dirección van en la C, si las hay.
+2. Abre el CSV en Hojas de cálculo y copia a la pestaña **Importar clientes** de la plantilla (desde la fila 2):
+   - **Columna A (nombre):** la columna del nombre completo (*Name*) o, si no la hay, junta **First Name** y **Last Name**.
+   - **Columna B (teléfono):** solo **Phone 1 - Value**. Ignora las demás columnas de teléfono (*Phone 2*, *Phone 3*…) y, si una celda trae varios números separados por ` ::: `, la app toma el primero.
+   - **Columna C (notas o dirección):** opcional.
+   - Pega como **solo valores** (*Edición → Pegado especial → Solo valores*): así no llegan fórmulas ni errores (`#ERROR!`, `#REF!`), que la app trata como celdas vacías.
 3. En la app: **Más → Google Sheets → Traer clientes del Sheet** (o el mismo botón en **Clientes**). La app muestra cuántos agregará y pide confirmar.
+
+**Límites y cuidados:**
+
+- Se leen hasta **5.000 filas con nombre** (las filas vacías no cuentan). Si hay más, la app avisa: «Solo se leyeron las primeras 5000 filas».
+- La pestaña **Importar clientes NO entra en el respaldo oculto** (`_respaldo`): los clientes que traigas quedan en la app, y de ahí sí se respaldan, pero la lista pegada en esa pestaña se pierde si borras el Sheet. Guarda el CSV original o vuelve a pegarlo cuando haga falta.
+- Si falta esa pestaña, el script la crea (con su cabecera) la primera vez que pulsas **Traer clientes del Sheet**.
+- Teléfonos: de cada celda se toma solo el primer número (se corta en «ext», «x», `/`, `;` o `,`) y deben tener entre 7 y 12 dígitos; lo demás se guarda sin teléfono. El +57 y el prefijo 00 se ignoran, pero otro país (+1…) cuenta como un número distinto.
+- Si varias personas ya guardadas **sin teléfono** tienen el mismo nombre que una fila, la app no adivina a cuál pertenece: no toca ninguna y lo cuenta como *ambiguo* en el aviso de confirmación.
+- **¿Instalaste el script antes de esta función?** Actualízalo: pega de nuevo `apps-script/Code.gs` (conservando tu clave) y **Implementar → Administrar implementaciones → Editar → Nueva versión**. Mientras tanto, la app avisa «Tu script es de una versión anterior».
 
 Si algún cliente solo aparece en WhatsApp con su número (sin guardar como contacto), guárdalo primero en la agenda con un nombre.
 
