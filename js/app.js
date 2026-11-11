@@ -48,6 +48,7 @@ const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo
 let aviso_t; // se declara antes de cualquier uso: migrar() y guardar() pueden llamar a aviso() al arrancar
 let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], config = configBase();
 let errorArranque = null, avisoArranque = '';
+let sync = null, syncEnCurso = false, syncTimer = null; // conexión con Google Sheets (ver más abajo)
 
 /* ---- Validación y saneamiento: nada entra a la memoria sin pasar por aquí ---- */
 const LIM = 1e15;
@@ -115,11 +116,12 @@ function guardar() {
   try {
     config.schemaVersion = SCHEMA;
     localStorage.setItem(CLAVE_DB, JSON.stringify(estado()));
-    return true;
   } catch {
     aviso('No se pudo guardar. Haz un respaldo y libera espacio.', true);
     return false;
   }
+  programarSync();
+  return true;
 }
 /* Muta, guarda y, si guardar falla, devuelve la memoria al estado anterior.
    El aviso de éxito solo sale si se guardó (el de error lo pone guardar()). */
@@ -240,12 +242,13 @@ const ICONOS = {
   caja: '<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>',
   factura: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
   respaldo: '<path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v3h16v-3"/>',
+  hoja: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 9v12"/>',
   ajustes: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.900 4.900l2.100 2.100M17 17l2.100 2.100M4.900 19.100L7 17M17 7l2.100-2.100"/>',
 };
 const icono = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS[n]}</svg>`;
 
 const NAV = [['inicio', 'Inicio'], ['vender', 'Vender'], ['comprar', 'Comprar'], ['clientes', 'Clientes'], ['mas', 'Más']];
-const SUBVISTAS = ['productos', 'reportes', 'respaldo', 'ajustes'];
+const SUBVISTAS = ['productos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
 
 function aviso(msg, error = false) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -333,7 +336,7 @@ VISTAS.inicio = () => {
 
   const diasSinRespaldo = config.ultimoRespaldo ? diasEntre(config.ultimoRespaldo, h) : null;
   const hayDatos = ventas.length + entradas.length + clientes.length > 0;
-  const recordatorio = hayDatos && (diasSinRespaldo === null || diasSinRespaldo >= 14)
+  const recordatorio = hayDatos && !(sync && sync.listo) && (diasSinRespaldo === null || diasSinRespaldo >= 14)
     ? `<div class="alert info"><strong>Haz un respaldo.</strong> ${diasSinRespaldo === null ? 'Nunca has guardado uno.' : `Van ${diasSinRespaldo} días.`} Tus datos viven solo en este teléfono.
        <br><button class="btn btn-sm btn-ghost" data-act="ir" data-v="respaldo">Ir a respaldo</button></div>` : '';
 
@@ -646,7 +649,7 @@ function whatsapp(id) {
 VISTAS.mas = () => `
   ${cabecera('Más')}
   <div class="card menu"><div class="list">
-    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
+    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
       .map(([v, i, t, s]) => `<button class="row" data-act="ir" data-v="${v}"><span class="ico">${icono(i)}</span><span class="main"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">&rsaquo;</span></button>`).join('')}
   </div></div>
   <div class="card"><h3>Instalar en el celular</h3>
@@ -808,8 +811,9 @@ async function restaurarTexto(texto) {
   migrar(datos);
   if (!(await confirmar({ titulo: 'Restaurar respaldo', texto: `Se reemplazarán TODOS los datos de este teléfono por los del respaldo (${datos.ventas.length} ventas, ${datos.clientes.length} clientes). ¿Continuar?`, ok: 'Restaurar', peligro: true }))) return;
   try { localStorage.setItem(CLAVE_PREV, JSON.stringify(estado())); } catch { return aviso('No hay espacio para guardar una copia de lo actual. No se restauró nada.', true); }
-  aplicar(() => poner(datos), 'Datos restaurados');
+  const ok = aplicar(() => poner(datos), 'Datos restaurados');
   repintar();
+  return ok;
 }
 function importarJSON(archivo) {
   const lector = new FileReader();
@@ -853,6 +857,136 @@ MONTAR.ajustes = () => {
     if (!(enRango(m) && m <= 500) || !(Number.isInteger(a) && enRango(a)) || !(Number.isInteger(v) && v >= 1 && v <= 365)) return aviso('Revisa los valores', true);
     aplicar(() => { config.margen = m; config.alerta = a; config.vidaUtil = v; }, 'Ajustes guardados');
   });
+};
+
+/* =============== Sincronización con Google Sheets =============== */
+/* El teléfono es la fuente de los datos; el Sheet es un espejo (y sirve para restaurar). Cada envío REEMPLAZA el
+   contenido del Sheet con el estado completo, así que enviar varias veces nunca duplica filas.
+   El script que recibe los datos vive en apps-script/Code.gs; el enlace y la clave se guardan aparte de los datos
+   (clave eg_sync) para que no viajen dentro de los respaldos. */
+const CLAVE_SYNC = 'eg_sync';
+// Solo se envían datos a una aplicación web de Google Apps Script: nunca a otro dominio.
+const URL_SCRIPT_RE = /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/;
+function leerSync() {
+  try {
+    const v = JSON.parse(localStorage.getItem(CLAVE_SYNC));
+    if (!v || typeof v !== 'object' || !URL_SCRIPT_RE.test(v.url || '') || typeof v.clave !== 'string' || !v.clave) return null;
+    return { url: v.url, clave: v.clave, listo: v.listo === true, pendiente: !!v.pendiente, ultimo: typeof v.ultimo === 'string' ? v.ultimo : null, error: typeof v.error === 'string' ? v.error : '' };
+  } catch { return null; }
+}
+function guardarSync() {
+  try { if (sync) localStorage.setItem(CLAVE_SYNC, JSON.stringify(sync)); else localStorage.removeItem(CLAVE_SYNC); } catch { /* sin espacio: el envío sigue funcionando */ }
+}
+const tieneDatos = () => ventas.length + entradas.length + clientes.length + ajustes.length > 0 || products.some(p => p.stock > 0 || p.cost > 0 || p.price > 0);
+function mensajeSync(e) {
+  const m = String((e && e.message) || e);
+  if (m === 'timeout') return 'tardó demasiado en responder';
+  if (/failed to fetch|networkerror|load failed/i.test(m)) return 'no hay conexión, o el enlace no está publicado para «Cualquier persona»';
+  return m;
+}
+function llamarSheet(cuerpo, ms = 30000) {
+  let t;
+  // text/plain evita la verificación previa (CORS preflight), que Apps Script no responde.
+  const envio = fetch(sync.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ clave: sync.clave, ...cuerpo }) }).then(r => r.json());
+  const limite = new Promise((_, rechazar) => { t = setTimeout(() => rechazar(new Error('timeout')), ms); });
+  return Promise.race([envio, limite]).finally(() => clearTimeout(t)).then(j => {
+    if (!j || !j.ok) throw new Error((j && j.error) || 'respuesta no válida del script');
+    return j;
+  });
+}
+function pintarEstadoSync() {
+  const el = $('#sync-estado');
+  if (!el || !sync) return;
+  el.textContent = syncEnCurso ? 'Enviando…'
+    : sync.error ? `No se pudo enviar (${sync.error}). Se reintentará solo.`
+    : sync.pendiente ? 'Hay cambios pendientes de enviar.'
+    : sync.ultimo ? `Al día · último envío ${new Date(sync.ultimo).toLocaleString('es-CO')}` : 'Todavía no se ha enviado nada.';
+}
+// Tras cada guardado se espera unos segundos (por si siguen más cambios) y se envía todo junto.
+function programarSync() {
+  try {
+    if (!sync || !sync.listo) return;
+    sync.pendiente = true; guardarSync();
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { enviarSheet(false); }, 4000);
+  } catch { /* la sincronización nunca debe impedir guardar */ }
+}
+async function enviarSheet(manual) {
+  if (!sync) return false;
+  if (syncEnCurso) { if (!manual) programarSync(); return false; }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) { if (manual) aviso('Sin internet: se enviará al volver la conexión', true); return false; }
+  syncEnCurso = true; pintarEstadoSync();
+  try {
+    await llamarSheet({ accion: 'guardar', datos: { app: 'el-gallinero', version: SCHEMA, exportado: new Date().toISOString(), ...estado() } });
+    sync.ultimo = new Date().toISOString(); sync.pendiente = false; sync.error = ''; guardarSync();
+    if (manual) aviso('Enviado a Google Sheets');
+    return true;
+  } catch (e) {
+    sync.pendiente = true; sync.error = mensajeSync(e); guardarSync();
+    if (manual) aviso('No se pudo enviar: ' + sync.error, true);
+    else { clearTimeout(syncTimer); syncTimer = setTimeout(() => { enviarSheet(false); }, 60000); }
+    return false;
+  } finally { syncEnCurso = false; pintarEstadoSync(); }
+}
+async function traerDelSheet() {
+  if (!sync) return false;
+  let j;
+  try { j = await llamarSheet({ accion: 'leer' }); } catch (e) { aviso('No se pudo leer el Sheet: ' + mensajeSync(e), true); return false; }
+  return !!(await restaurarTexto(j.texto));
+}
+// Diálogo con varias opciones (confirmar() solo admite sí/no).
+function elegir(titulo, texto, opciones) {
+  return new Promise(res => {
+    hoja(titulo, `<p class="sheet-text">${esc(texto)}</p><div class="btn-row" style="flex-direction:column">${opciones.map((o, i) => `<button class="btn ${o.cls || ''}" data-i="${i}">${esc(o.t)}</button>`).join('')}</div>`,
+      b => b.addEventListener('click', e => { const x = e.target.closest('[data-i]'); if (x) { cerrarHoja(); res(opciones[Number(x.dataset.i)].v); } }));
+  });
+}
+async function conectarSheet(url, clave) {
+  url = String(url).trim(); clave = String(clave).trim();
+  if (!URL_SCRIPT_RE.test(url)) return aviso('El enlace debe ser el de la aplicación web de Google (script.google.com/macros/s/…/exec)', true);
+  if (clave.length < 4) return aviso('Escribe la clave que pusiste dentro del script', true);
+  const anterior = sync;
+  sync = { url, clave, listo: false, pendiente: false, ultimo: null, error: '' };
+  let info;
+  try { info = await llamarSheet({ accion: 'ping' }); } catch (e) { sync = anterior; return aviso('No se pudo conectar: ' + mensajeSync(e), true); }
+  let decision = 'enviar';
+  if (info.tieneDatos) {
+    const cuando = info.actualizado ? `, actualizado ${new Date(info.actualizado).toLocaleString('es-CO')}` : '';
+    const resumen = `El Sheet ya tiene datos (${info.ventas || 0} ventas, ${info.clientes || 0} clientes${cuando}).`;
+    decision = !tieneDatos() ? 'restaurar'
+      : await elegir('El Sheet ya tiene datos', `${resumen} Este teléfono también tiene datos. ¿Cuáles conservas? Lo que no elijas no se borra del todo: el Sheet guarda una copia anterior y el teléfono, una en eg_prev.`,
+        [{ v: 'restaurar', t: 'Usar los del Sheet' }, { v: 'enviar', t: 'Usar los de este teléfono', cls: 'btn-ghost' }, { v: 'cancelar', t: 'Cancelar', cls: 'btn-ghost' }]);
+    if (decision === 'cancelar') { sync = anterior; return; }
+  }
+  if (decision === 'restaurar' && !(await traerDelSheet())) { sync = anterior; return; }
+  sync.listo = true; guardarSync();
+  if (decision === 'enviar') await enviarSheet(true);
+  else { sync.ultimo = new Date().toISOString(); guardarSync(); aviso('Conectado y restaurado desde Google Sheets'); }
+  if (vistaActual === 'sheets') repintar();
+}
+
+VISTAS.sheets = () => `
+  ${cabecera('Google Sheets', 'mas')}
+  ${sync && sync.listo ? `
+  <div class="card"><h3>Conectado</h3>
+    <p class="muted" style="margin-bottom:12px" id="sync-estado"></p>
+    <p class="muted" style="margin-bottom:12px">Enlace: ${esc(sync.url.slice(0, 46))}…</p>
+    <button class="btn btn-teal" data-act="sheets-enviar">Enviar ahora</button>
+    <div class="btn-row"><button class="btn btn-ghost" data-act="sheets-restaurar">Restaurar desde el Sheet</button></div>
+    <div class="btn-row"><button class="btn btn-ghost" data-act="sheets-desconectar">Desconectar</button></div>
+  </div>` : `
+  <form id="f-sh" class="card" novalidate>
+    <h3>Conectar una hoja de cálculo</h3>
+    <p class="muted" style="margin-bottom:14px">Cada venta, compra y cliente se copia automáticamente a tu Google Sheet, y puedes restaurar todo desde ahí si cambias de celular.</p>
+    <label class="field"><span>Enlace de la aplicación web</span><input id="sh-url" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+    <label class="field"><span>Clave</span><input id="sh-clave" type="password" autocomplete="off"><div class="hint">La misma que escribiste dentro del script.</div></label>
+    <button class="btn btn-teal" type="submit">Conectar</button>
+    <div class="btn-row"><button type="button" class="btn btn-ghost" data-act="sheets-ayuda">¿Cómo lo preparo?</button><button type="button" class="btn btn-ghost" data-act="sheets-script">Copiar el script</button></div>
+  </form>`}`;
+MONTAR.sheets = () => {
+  pintarEstadoSync();
+  const f = $('#f-sh');
+  if (f) f.addEventListener('submit', e => { e.preventDefault(); conectarSheet($('#sh-url').value, $('#sh-clave').value); });
 };
 
 /* =============== Acciones (clics) =============== */
@@ -909,6 +1043,23 @@ const ACCIONES = {
   },
   'prod-nuevo': () => formProducto(null),
   'lista-precios': () => listaPrecios(),
+  'sheets-enviar': () => enviarSheet(true),
+  'sheets-restaurar': () => traerDelSheet(),
+  'sheets-desconectar': async () => {
+    if (!(await confirmar({ titulo: 'Desconectar', texto: 'La app deja de enviar datos al Sheet. Lo que ya está en el Sheet no se borra.', ok: 'Desconectar' }))) return;
+    clearTimeout(syncTimer); sync = null; guardarSync(); aviso('Desconectado'); repintar();
+  },
+  'sheets-script': async () => {
+    try { const r = await fetch('apps-script/Code.gs'); const t = await r.text(); await navigator.clipboard.writeText(t); aviso('Script copiado. Pégalo en Apps Script'); }
+    catch { aviso('No se pudo copiar el script. Búscalo en la carpeta apps-script del proyecto', true); }
+  },
+  'sheets-ayuda': () => hoja('Cómo prepararlo', `<ol class="sheet-text" style="padding-left:20px;line-height:1.6">
+    <li>Crea un Google Sheet nuevo.</li>
+    <li>Menú <strong>Extensiones → Apps Script</strong>. Borra lo que haya y pega el script (botón «Copiar el script»).</li>
+    <li>En la primera línea cambia <strong>CAMBIA-ESTA-CLAVE</strong> por una clave tuya y anótala.</li>
+    <li><strong>Implementar → Nueva implementación → Aplicación web</strong>. Ejecutar como <strong>Yo</strong>; acceso: <strong>Cualquier persona</strong>. Autoriza los permisos.</li>
+    <li>Copia la URL que termina en <strong>/exec</strong>, pégala aquí con la clave y pulsa Conectar.</li></ol>
+    <p class="muted" style="margin-top:10px">La URL y la clave son como una contraseña: no las compartas.</p>`),
   'lp-copiar': async () => {
     const t = $('#lp-texto'); if (!t) return;
     try { await navigator.clipboard.writeText(t.value); aviso('Texto copiado'); } catch { t.select(); aviso('Selecciona y copia el texto'); }
@@ -944,6 +1095,9 @@ function mostrarActualizacion() {
 }
 if (errorArranque) pantallaRecuperacion(errorArranque);
 else {
+  sync = leerSync();
+  window.addEventListener('online', () => { if (sync && sync.listo && sync.pendiente) programarSync(); });
+  if (sync && sync.listo && sync.pendiente) programarSync();
   try { pintar(); if (avisoArranque) aviso(avisoArranque, true); } catch (e) { pantallaRecuperacion(e); }
   if (navigator.serviceWorker && location.protocol.startsWith('http')) {
     const sw = navigator.serviceWorker, habiaControlador = !!sw.controller;
