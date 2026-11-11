@@ -34,9 +34,11 @@ const PRODUCTOS_BASE = [
   ['tipoa', 'Huevo Tipo A', 'unidades', 'granja'], ['tipob', 'Huevo Tipo B', 'unidades', 'granja'],
   ['codorniz', 'Huevo de Codorniz', 'unidades', 'granja'], ['leche', 'Leche Colanta', 'bolsas', 'vencimiento'],
   ['queso', 'Queso Colanta', 'unidades', 'vencimiento'], ['panela', 'Panela', 'libras', 'ninguno'], ['arepa', 'Arepa', 'unidades', 'vencimiento'],
-].map(([id, name, unit, control]) => ({ id, name, unit, cost: 0, price: 0, stock: 0, lastCost: 0, control }));
+].map(([id, name, unit, control]) => ({ id, name, unit, cost: 0, price: 0, stock: 0, lastCost: 0, control, panal: control === 'granja' ? 30 : 0 }));
 // Cómo se controla la frescura de cada producto: huevo fresco (días en la granja), empacado (fecha de vencimiento) o nada.
 const CONTROLES = ['granja', 'vencimiento', 'ninguno'];
+// Unidades por panal (0 = no se vende por panal). Los huevos de datos anteriores se asumen de 30.
+const rPanal = r => (r.panal == null ? (controlDe(r) === 'granja' ? 30 : 0) : Number.isInteger(r.panal) && r.panal >= 0 && r.panal <= 1000 ? r.panal : mal());
 const controlDe = r => (CONTROLES.includes(r.control) ? r.control : (r.isEgg ? 'granja' : (['leche', 'queso', 'arepa'].includes(r.id) ? 'vencimiento' : 'ninguno'))); // datos de la versión anterior: los lácteos y la arepa son empacados
 
 const SCHEMA = 3;
@@ -61,7 +63,7 @@ const rId = x => (Number.isSafeInteger(x) ? x : mal());
 const fechaOk = s => typeof s === 'string' && FECHA_RE.test(s) && isoDe(fechaDe(s)) === s;
 const rFecha = x => (fechaOk(x) ? x : mal());
 const SANEAR = {
-  products: r => ({ id: rSid(r.id), name: rTxt(r.name) || mal(), unit: rTxt(r.unit, 'unidades'), cost: rNum(r.cost, 0), price: rNum(r.price, 0), stock: rNum(r.stock, 0), lastCost: rNum(r.lastCost, 0), control: controlDe(r) }),
+  products: r => ({ id: rSid(r.id), name: rTxt(r.name) || mal(), unit: rTxt(r.unit, 'unidades'), cost: rNum(r.cost, 0), price: rNum(r.price, 0), stock: rNum(r.stock, 0), lastCost: rNum(r.lastCost, 0), control: controlDe(r), panal: rPanal(r) }),
   clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }),
   entradas: r => {
     const cantidad = rNum(r.cantidad), costoUnitario = rNum(r.costoUnitario, 0);
@@ -76,7 +78,7 @@ const SANEAR = {
     const cantidad = rNum(r.cantidad), precio = rNum(r.precio), costoUnitario = rNum(r.costoUnitario, 0), total = rNum(r.total, cantidad * precio);
     const tipoPago = r.tipoPago == null ? 'contado' : (r.tipoPago === 'contado' || r.tipoPago === 'credito' ? r.tipoPago : mal());
     const abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })) : mal();
-    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos };
+    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}) };
   },
 };
 function sanearConfig(c) {
@@ -347,7 +349,7 @@ VISTAS.inicio = () => {
   const conStock = products.filter(p => p.stock > 0);
   const sinStock = products.filter(p => p.stock <= 0).length;
   const stockHtml = conStock.length
-    ? conStock.map(p => `<div class="row"><div class="main"><div class="t">${esc(p.name)}</div></div><div class="r"><strong>${num(p.stock)}</strong> <span class="muted">${esc(p.unit)}</span> ${p.stock < config.alerta ? '<span class="badge low">Bajo</span>' : ''}</div></div>`).join('') + (sinStock ? `<p class="muted" style="margin-top:8px">${sinStock} producto${sinStock > 1 ? 's' : ''} sin existencias.</p>` : '')
+    ? conStock.map(p => `<div class="row"><div class="main"><div class="t">${esc(p.name)}</div></div><div class="r"><strong>${num(p.stock)}</strong> <span class="muted">${esc(p.unit)}${panalesTxt(p)}</span> ${p.stock < config.alerta ? '<span class="badge low">Bajo</span>' : ''}</div></div>`).join('') + (sinStock ? `<p class="muted" style="margin-top:8px">${sinStock} producto${sinStock > 1 ? 's' : ''} sin existencias.</p>` : '')
     : '<p class="empty">Aún no hay existencias. Registra lo que llegue en «Comprar».</p>';
 
   return `
@@ -388,12 +390,16 @@ VISTAS.vender = () => {
     ${cabecera('Vender')}
     <form id="f-venta" class="card" novalidate>
       <label class="field"><span>Producto</span><select id="v-prod">${opcionesProductos(sel)}</select><div class="hint" id="v-hint"></div></label>
+      <div class="seg" id="v-uni-box" role="radiogroup" aria-label="Se vende por" hidden>
+        <label><input type="radio" name="uni" value="panal" checked><span id="v-uni-panal">Por panal</span></label>
+        <label><input type="radio" name="uni" value="unidad"><span>Por unidad</span></label>
+      </div>
       <div class="row2">
-        <div class="field"><span>Cantidad</span>
+        <div class="field"><span id="v-cant-lbl">Cantidad</span>
           <div class="stepper"><button type="button" data-act="paso" data-t="v-cant" data-d="-1" aria-label="Menos">&minus;</button><input id="v-cant" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="Cantidad"><button type="button" data-act="paso" data-t="v-cant" data-d="1" aria-label="Más">+</button></div>
           <div class="chips"><button type="button" class="chip" data-act="paso" data-t="v-cant" data-d="10">+10</button><button type="button" class="chip" data-act="paso" data-t="v-cant" data-d="30">+30</button><button type="button" class="chip" data-act="paso" data-t="v-cant" data-d="100">+100</button></div>
         </div>
-        <label class="field"><span>Precio por unidad</span><input id="v-precio" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
+        <label class="field"><span id="v-precio-lbl">Precio por unidad</span><input id="v-precio" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
       </div>
       <div class="total-line"><span>Total</span><strong id="v-total">$0</strong><span class="muted" id="v-gan"></span></div>
       <div class="seg" role="radiogroup" aria-label="Tipo de pago">
@@ -413,27 +419,42 @@ VISTAS.vender = () => {
       ${vh.length ? `<div class="list">${vh.map(filaVenta).join('')}</div>` : '<p class="empty">Todavía no hay ventas hoy.</p>'}</section>`;
 };
 const opcionesClientes = sel => '<option value="">Sin cliente (mostrador)</option>' + clientes.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map(c => `<option value="${esc(c.id)}" ${c.id === sel ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
+const cantTxt = v => (v.panales != null ? `${num(v.panales)} ${v.panales === 1 ? 'panal' : 'panales'}` : num(v.cantidad));
+const precioTxt = v => (v.panales != null ? `${money(v.precioPanal)} c/panal` : `${money(v.precio)} c/u`);
+const panalesTxt = p => (p.panal > 0 && p.stock >= p.panal ? ` · ${num(Math.floor(p.stock / p.panal))} panales` : '');
 const filaVenta = v => {
   const p = prod(v.productoId), c = cliente(v.clienteId);
-  return `<div class="row"><div class="main"><div class="t">${num(v.cantidad)} × ${esc(p ? p.name : 'Producto eliminado')}</div>
-    <div class="s">${money(v.precio)} c/u · ${v.tipoPago === 'credito' ? 'Crédito' : 'Contado'}${c ? ' · ' + esc(c.nombre) : ''}${v.fecha !== hoy() ? ' · ' + verFecha(v.fecha) : ''}</div></div>
+  return `<div class="row"><div class="main"><div class="t">${cantTxt(v)} × ${esc(p ? p.name : 'Producto eliminado')}</div>
+    <div class="s">${precioTxt(v)} · ${v.tipoPago === 'credito' ? 'Crédito' : 'Contado'}${c ? ' · ' + esc(c.nombre) : ''}${v.fecha !== hoy() ? ' · ' + verFecha(v.fecha) : ''}</div></div>
     <div class="r"><strong>${money(v.total)}</strong><br><button class="link-btn" data-act="venta-anular" data-id="${esc(v.id)}">Anular</button></div></div>`;
 };
 
 MONTAR.vender = () => {
   const f = $('#f-venta');
+  // Los productos con panal (huevos) se venden por panal o por unidad; lo demás, solo por unidad.
+  const modo = () => { const p = prod($('#v-prod').value), r = f.querySelector('input[name=uni]:checked'); return p && p.panal > 0 && r && r.value === 'panal' ? 'panal' : 'unidad'; };
+  const factor = () => { const p = prod($('#v-prod').value); return p && modo() === 'panal' ? p.panal : 1; };
+  const ajustarUnidad = () => {
+    const p = prod($('#v-prod').value), tiene = !!p && p.panal > 0, m = modo();
+    $('#v-uni-box').hidden = !tiene;
+    if (tiene) $('#v-uni-panal').textContent = `Por panal (${p.panal})`;
+    $('#v-cant-lbl').textContent = m === 'panal' ? 'Panales' : 'Cantidad';
+    $('#v-precio-lbl').textContent = m === 'panal' ? 'Precio por panal' : 'Precio por unidad';
+    const pasos = m === 'panal' ? [1, 5, 10] : [10, 30, 100];
+    f.querySelectorAll('.chip').forEach((c, i) => { c.dataset.d = pasos[i]; c.textContent = '+' + pasos[i]; });
+  };
   const ponerPrecio = () => {
-    const p = prod($('#v-prod').value);
-    $('#v-precio').value = p ? (precioInicial(p) || '') : '';
-    $('#v-hint').textContent = !p ? '' : p.price > 0 ? `Precio fijo: ${money(p.price)} · costo promedio ${money(p.cost)}`
-      : p.cost > 0 ? `Sugerido con ${config.margen}% de margen: ${money(precioSugerido(p))} · costo promedio ${money(p.cost)}` : 'Aún no hay costo: registra una compra para ver el precio sugerido.';
+    const p = prod($('#v-prod').value), k = factor(), por = k > 1 ? 'panal' : 'unidad';
+    $('#v-precio').value = p ? (Math.round(precioInicial(p) * k) || '') : '';
+    $('#v-hint').textContent = !p ? '' : p.price > 0 ? `Precio fijo: ${money(p.price * k)} por ${por} · costo promedio ${money(p.cost * k)}`
+      : p.cost > 0 ? `Sugerido con ${config.margen}% de margen: ${money(precioSugerido(p) * k)} por ${por} · costo promedio ${money(p.cost * k)}` : 'Aún no hay costo: registra una compra para ver el precio sugerido.';
     calcular();
   };
   const calcular = () => {
-    const p = prod($('#v-prod').value);
+    const p = prod($('#v-prod').value), k = factor();
     const c = parseFloat($('#v-cant').value) || 0, pr = parseFloat($('#v-precio').value) || 0;
     $('#v-total').textContent = money(c * pr);
-    $('#v-gan').textContent = p && p.cost > 0 && c && pr ? `ganas ${money((pr - p.cost) * c)}` : '';
+    $('#v-gan').textContent = p && p.cost > 0 && c && pr ? `ganas ${money((pr - p.cost * k) * c)}` : '';
   };
   const pago = () => (f.querySelector('input[name=pago]:checked') || {}).value;
   const alternarPago = () => {
@@ -441,32 +462,35 @@ MONTAR.vender = () => {
     $('#v-cli-lbl').textContent = cr ? 'Cliente (obligatorio a crédito)' : 'Cliente (opcional)';
     $('#v-abono-box').hidden = !cr;
   };
-  $('#v-prod').addEventListener('change', ponerPrecio);
+  $('#v-prod').addEventListener('change', () => { const r = f.querySelector('input[name=uni][value=panal]'); if (r) r.checked = true; ajustarUnidad(); ponerPrecio(); });
+  f.querySelectorAll('input[name=uni]').forEach(r => r.addEventListener('change', () => { ajustarUnidad(); ponerPrecio(); }));
   f.addEventListener('input', calcular);
   f.querySelectorAll('input[name=pago]').forEach(r => r.addEventListener('change', alternarPago));
-  ponerPrecio(); alternarPago();
+  ajustarUnidad(); ponerPrecio(); alternarPago();
 
   f.addEventListener('submit', async e => {
     e.preventDefault();
     const p = prod($('#v-prod').value);
-    const cantidad = leerNum($('#v-cant').value), precio = leerNum($('#v-precio').value);
+    const k = factor(), enPanal = modo() === 'panal';
+    const n = leerNum($('#v-cant').value), precioIn = leerNum($('#v-precio').value);
+    const cantidad = n * k; // el inventario siempre se lleva en unidades
     const tipoPago = pago(), clienteId = $('#v-cli').value || null, fecha = $('#v-fecha').value;
     const abonoTxt = String($('#v-abono').value ?? '').trim();
     if (!p) return aviso('Elige un producto', true);
-    if (!(Number.isInteger(cantidad) && enRango(cantidad, 1))) return aviso('La cantidad debe ser un número entero mayor que cero', true);
-    if (!enRango(precio)) return aviso('Escribe el precio de venta (un número razonable)', true);
+    if (!(Number.isInteger(n) && enRango(n, 1) && enRango(cantidad, 1))) return aviso(enPanal ? 'Los panales deben ser un número entero mayor que cero' : 'La cantidad debe ser un número entero mayor que cero', true);
+    if (!enRango(precioIn)) return aviso('Escribe el precio de venta (un número razonable)', true);
     if (!fechaOk(fecha)) return aviso('Falta la fecha', true);
     if (tipoPago === 'credito' && !clienteId) return aviso('Una venta a crédito necesita cliente', true);
     const abonoIn = tipoPago === 'credito' && abonoTxt !== '' ? leerNum(abonoTxt) : 0;
     if (!enRango(abonoIn)) return aviso('El abono no es válido', true);
     if (p.stock < cantidad && !(await confirmar({ titulo: 'Stock insuficiente', texto: `Solo hay ${num(p.stock)} ${p.unit} de ${p.name}. ¿Registrar la venta igual?`, ok: 'Sí, registrar' }))) return;
-    const total = cantidad * precio;
+    const total = n * precioIn, precio = total / cantidad; // el total es exacto aunque el precio por unidad no lo sea
     aplicar(() => {
       const descontado = Math.min(p.stock, cantidad);
       p.stock -= descontado;
       let pagado = total; const abonos = [];
       if (tipoPago === 'credito') { const ab = Math.min(abonoIn, total); pagado = ab; if (ab > 0) abonos.push({ fecha, monto: ab }); }
-      ventas.push({ id: nuevoId(), productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos });
+      ventas.push({ id: nuevoId(), productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos, ...(enPanal ? { panales: n, precioPanal: precioIn } : {}) });
     }, `Venta guardada · ${money(total)}`);
     memoVenta = { productoId: p.id, clienteId: clienteId || '', pago: tipoPago };
     repintar();
@@ -602,7 +626,7 @@ function verCliente(id) {
       const p = prod(v.productoId), ab = v.pagado || 0, resta = debeVenta(v);
       const est = v.tipoPago !== 'credito' || resta <= 0 ? ['ok', 'Pagado'] : ab > 0 ? ['low', 'Abono parcial'] : ['out', 'Pendiente'];
       return `<div class="pedido"><div class="top-line"><strong>${verFecha(v.fecha)}</strong><span class="badge ${est[0]}">${est[1]}</span></div>
-        <div>${num(v.cantidad)} × ${esc(p ? p.name : 'Producto eliminado')} a ${money(v.precio)}</div>
+        <div>${cantTxt(v)} × ${esc(p ? p.name : 'Producto eliminado')} a ${precioTxt(v).replace(' c/', ' por ')}</div>
         <div>Total ${money(v.total)}${v.tipoPago === 'credito' ? ` · abonado ${money(ab)} · <strong>debe ${money(resta)}</strong>` : ' · contado'}</div>
         ${resta > 0 ? `<div class="btn-row"><button class="btn btn-sm btn-teal" data-act="abonar" data-venta="${esc(v.id)}">Abonar</button><button class="btn btn-sm btn-sun" data-act="pagar" data-id="${esc(v.id)}">Pagó completo</button></div>` : ''}</div>`;
     }).join('') : '<p class="empty">Todavía no tiene pedidos.</p>'}`);
@@ -639,7 +663,7 @@ function whatsapp(id) {
   let msg = `Hola ${c.nombre}, te escribo de El Gallinero.\n\n`;
   if (d > 0) {
     msg += `Tu saldo pendiente es de ${money(d)}.\n\nDetalle:\n`;
-    ventas.filter(v => v.clienteId === id && debeVenta(v) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha)).forEach(v => { const p = prod(v.productoId); msg += `• ${verFecha(v.fecha)}: ${num(v.cantidad)} ${p ? p.name : ''} - debe ${money(debeVenta(v))}\n`; });
+    ventas.filter(v => v.clienteId === id && debeVenta(v) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha)).forEach(v => { const p = prod(v.productoId); msg += `• ${verFecha(v.fecha)}: ${cantTxt(v)} ${p ? p.name : ''} - debe ${money(debeVenta(v))}\n`; });
     msg += '\nPor favor confirma el pago o un abono. ¡Gracias!';
   } else msg += 'Tu cuenta está al día. ¡Gracias por tu compra!';
   window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank', 'noopener');
@@ -665,7 +689,7 @@ VISTAS.productos = () => `
     const lote = loteUrgente(p);
     if (lote) { const d = diasRestantes(lote); frescura = ` · ${d > 0 ? (lote.vence ? `vence en ${d} días` : `~${d} días de vida`) : d === 0 ? 'vence hoy' : 'pasado de fecha'}`; }
     return `<div class="row"><div class="main"><div class="t">${esc(p.name)}</div>
-      <div class="s"><strong>${num(p.stock)}</strong> ${esc(p.unit)} <span class="badge ${b[0]}">${b[1]}</span>${frescura}</div>
+      <div class="s"><strong>${num(p.stock)}</strong> ${esc(p.unit)}${panalesTxt(p)} <span class="badge ${b[0]}">${b[1]}</span>${frescura}</div>
       <div class="s">Costo ${p.cost > 0 ? money(p.cost) : '—'} · Venta ${p.price > 0 ? money(p.price) + ' (fijo)' : (precioSugerido(p) ? money(precioSugerido(p)) + ' (sugerido)' : '—')}</div></div>
       <div class="r" style="display:flex;flex-direction:column;gap:6px"><button class="btn btn-sm" data-act="prod-editar" data-id="${esc(p.id)}">Editar</button><button class="btn btn-sm btn-ghost" data-act="perdida" data-id="${esc(p.id)}" ${p.stock > 0 ? '' : 'disabled'}>Pérdida</button></div></div>`;
   }).join('')}</div></div>
@@ -682,6 +706,7 @@ function formProducto(p) {
       <label class="field"><span>Control de frescura</span><select id="pr-control">
         ${[['granja', 'Huevo fresco: días en la granja'], ['vencimiento', 'Empacado: fecha de vencimiento'], ['ninguno', 'Sin control']].map(([v, t]) => `<option value="${v}" ${(p ? p.control : 'ninguno') === v ? 'selected' : ''}>${t}</option>`).join('')}
       </select><div class="hint">Cambia lo que se pide al registrar una compra de este producto.</div></label>
+      <label class="field" id="pr-b-panal" ${(p ? p.control : 'ninguno') === 'granja' ? '' : 'hidden'}><span>Unidades por panal</span><input id="pr-panal" type="number" inputmode="numeric" min="0" max="1000" step="1" value="${esc(p ? p.panal : 30)}"><div class="hint">Permite vender por panal. Pon 0 si este producto no se vende así.</div></label>
       <button class="btn btn-teal" type="submit">Guardar</button>
       ${p ? '<div class="btn-row"><button class="btn btn-ghost" type="button" id="pr-del">Eliminar producto</button></div>' : ''}
     </form>`, b => {
@@ -692,10 +717,14 @@ function formProducto(p) {
       const precioTxt = $('#pr-precio', b).value;
       const price = String(precioTxt).trim() === '' ? 0 : leerNum(precioTxt);
       if (!enRango(price)) return aviso('El precio de venta no es válido', true);
-      const dato = { name, unit: $('#pr-unidad', b).value.trim() || 'unidades', price, control: $('#pr-control', b).value };
+      const control = $('#pr-control', b).value;
+      const panal = control === 'granja' ? leerNum($('#pr-panal', b).value) : 0;
+      if (!(Number.isInteger(panal) && panal >= 0 && panal <= 1000)) return aviso('Las unidades por panal deben ser un entero entre 0 y 1000', true);
+      const dato = { name, unit: $('#pr-unidad', b).value.trim() || 'unidades', price, control, panal };
       aplicar(() => { if (p) Object.assign(p, dato); else products.push({ id: 'p' + nuevoId(), cost: 0, stock: 0, lastCost: 0, ...dato }); }, 'Producto guardado');
       cerrarHoja(); repintar();
     });
+    $('#pr-control', b).addEventListener('change', e => { $('#pr-b-panal', b).hidden = e.target.value !== 'granja'; });
     const del = $('#pr-del', b);
     if (del) del.addEventListener('click', () => {
       const uso = ventas.some(v => v.productoId === p.id) || entradas.some(x => x.productoId === p.id) || ajustes.some(x => x.productoId === p.id);
@@ -710,7 +739,7 @@ function textoListaPrecios() {
   const items = products.filter(p => p.stock > 0 && (p.price > 0 || precioSugerido(p) > 0));
   if (!items.length) return '';
   const fecha = new Date().toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }).replace(/ De /g, ' de ');
-  return `*El Gallinero · frescura y calidad*\nPrecios del ${fecha}:\n\n` + items.map(p => `• ${p.name}: ${money(p.price > 0 ? p.price : precioSugerido(p))} por ${p.unit.replace(/s$/, '')}`).join('\n') + '\n\nEscríbenos para tu pedido.';
+  return `*El Gallinero · frescura y calidad*\nPrecios del ${fecha}:\n\n` + items.map(p => { const u = p.price > 0 ? p.price : precioSugerido(p); return p.panal > 0 ? `• ${p.name}: ${money(u * p.panal)} el panal de ${p.panal} (${money(u)} c/u)` : `• ${p.name}: ${money(u)} por ${p.unit.replace(/s$/, '')}`; }).join('\n') + '\n\nEscríbenos para tu pedido.';
 }
 function listaPrecios() {
   const texto = textoListaPrecios();
