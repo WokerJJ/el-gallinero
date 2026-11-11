@@ -25,7 +25,7 @@ class El {
   click() { if (this.tagName === 'a' && this.owner) this.owner.descargas.push({ download: this.download, href: this.href }); }
 }
 
-function cargarApp({ seed = {}, fallarDesde = null, protocol = 'file:', serviceWorker, caches } = {}) {
+function cargarApp({ seed = {}, fallarDesde = null, protocol = 'file:', serviceWorker, caches, fetch } = {}) {
   const store = new Map(Object.entries(seed).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]));
   let umbral = fallarDesde, llamadas = 0;
   const localStorage = {
@@ -59,7 +59,7 @@ function cargarApp({ seed = {}, fallarDesde = null, protocol = 'file:', serviceW
   const sandbox = {
     document: doc, window: ventana, localStorage, location, console,
     navigator: { serviceWorker }, matchMedia: () => ({ matches: false }),
-    setTimeout: timer, clearTimeout, Blob, File, URL, Event, FileReader: FakeFR, caches,
+    setTimeout: timer, clearTimeout, Blob, File, URL, Event, FileReader: FakeFR, caches, fetch,
   };
   const ctx = vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(RAIZ, 'js', 'app.js'), 'utf8'), ctx, { filename: 'app.js' });
