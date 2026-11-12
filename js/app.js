@@ -45,7 +45,8 @@ const SCHEMA = 3;
 const CLAVE_DB = 'eg_db', CLAVE_PREV = 'eg_prev';
 // Claves de la versión anterior (una por colección): solo se LEEN, para migrar al guardado único eg_db.
 const CLAVES = { products: 'eg_products', entradas: 'eg_entradas', ventas: 'eg_ventas', clientes: 'eg_clientes', config: 'eg_config', ajustes: 'eg_ajustes' };
-const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, schemaVersion: SCHEMA });
+const negocioBase = () => ({ nombre: 'El Gallinero', nit: '', direccion: '', telefono: '', ciudad: '', prefijo: 'CV' });
+const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, schemaVersion: SCHEMA });
 
 let aviso_t; // se declara antes de cualquier uso: migrar() y guardar() pueden llamar a aviso() al arrancar
 let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], config = configBase();
@@ -64,7 +65,7 @@ const fechaOk = s => typeof s === 'string' && FECHA_RE.test(s) && isoDe(fechaDe(
 const rFecha = x => (fechaOk(x) ? x : mal());
 const SANEAR = {
   products: r => ({ id: rSid(r.id), name: rTxt(r.name) || mal(), unit: rTxt(r.unit, 'unidades'), cost: rNum(r.cost, 0), price: rNum(r.price, 0), stock: rNum(r.stock, 0), lastCost: rNum(r.lastCost, 0), control: controlDe(r), panal: rPanal(r) }),
-  clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }),
+  clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas), documento: rTxt(r.documento).slice(0, 30) }),
   proveedores: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }),
   entradas: r => {
     const cantidad = rNum(r.cantidad), costoUnitario = rNum(r.costoUnitario, 0);
@@ -83,14 +84,20 @@ const SANEAR = {
     const cantidad = rNum(r.cantidad), precio = rNum(r.precio), costoUnitario = rNum(r.costoUnitario, 0), total = rNum(r.total, cantidad * precio);
     const tipoPago = r.tipoPago == null ? 'contado' : (r.tipoPago === 'contado' || r.tipoPago === 'credito' ? r.tipoPago : mal());
     const abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })) : mal();
-    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}) };
+    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(r.numero != null ? { numero: rId(r.numero) } : {}) };
   },
 };
 function sanearConfig(c) {
   c = c && typeof c === 'object' && !Array.isArray(c) ? c : {};
   const n = (x, def, min, max) => { const v = x == null || x === '' ? NaN : Number(x); return Number.isFinite(v) && v >= min && v <= max ? v : def; };
   const base = configBase();
-  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, schemaVersion: SCHEMA };
+  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: Number.isSafeInteger(c.consecutivo) && c.consecutivo >= 1 ? c.consecutivo : 1, schemaVersion: SCHEMA };
+}
+function sanearNegocio(n) {
+  n = n && typeof n === 'object' && !Array.isArray(n) ? n : {};
+  const t = (x, def, max = 100) => (typeof x === 'string' ? x.trim().slice(0, max) : def), base = negocioBase();
+  const prefijo = typeof n.prefijo === 'string' && /^[A-Za-z0-9]{0,6}$/.test(n.prefijo.trim()) ? n.prefijo.trim().toUpperCase() : base.prefijo;
+  return { nombre: t(n.nombre, base.nombre), nit: t(n.nit, '', 30), direccion: t(n.direccion, '', 150), telefono: t(n.telefono, '', 30), ciudad: t(n.ciudad, '', 60), prefijo };
 }
 // Devuelve datos limpios y la lista de registros inválidos (que NO se incluyen).
 function limpiar(crudo) {
@@ -435,7 +442,7 @@ const filaVenta = v => {
   const p = prod(v.productoId), c = cliente(v.clienteId);
   return `<div class="row"><div class="main"><div class="t">${cantTxt(v)} × ${esc(p ? p.name : 'Producto eliminado')}</div>
     <div class="s">${precioTxt(v)} · ${v.tipoPago === 'credito' ? 'Crédito' : 'Contado'}${c ? ' · ' + esc(c.nombre) : ''}${v.fecha !== hoy() ? ' · ' + verFecha(v.fecha) : ''}</div></div>
-    <div class="r"><strong>${money(v.total)}</strong><br><button class="link-btn" data-act="venta-anular" data-id="${esc(v.id)}">Anular</button></div></div>`;
+    <div class="r"><strong>${money(v.total)}</strong><br><button class="link-btn neutro" data-act="comprobante" data-id="${esc(v.id)}">Comprobante</button> <button class="link-btn" data-act="venta-anular" data-id="${esc(v.id)}">Anular</button></div></div>`;
 };
 
 MONTAR.vender = () => {
@@ -650,6 +657,7 @@ function formCliente(c, vuelta) {
     <form id="f-cli" novalidate>
       <label class="field"><span>Nombre</span><input id="cl-nombre" type="text" value="${esc(c ? c.nombre : '')}" autocomplete="off"></label>
       <label class="field"><span>Celular (para WhatsApp)</span><input id="cl-tel" type="tel" inputmode="tel" placeholder="300 123 4567" value="${esc(c ? c.telefono : '')}"></label>
+      <label class="field"><span>Cédula o NIT (para el comprobante)</span><input id="cl-doc" type="text" inputmode="numeric" value="${esc(c ? c.documento || '' : '')}" autocomplete="off"></label>
       <label class="field"><span>Dirección / notas</span><textarea id="cl-notas" rows="2">${esc(c ? c.notas : '')}</textarea></label>
       <button class="btn btn-teal" type="submit">Guardar</button>
       ${c && !ventas.some(v => v.clienteId === c.id) ? '<div class="btn-row"><button class="btn btn-ghost" type="button" id="cl-del">Eliminar cliente</button></div>' : ''}
@@ -658,7 +666,7 @@ function formCliente(c, vuelta) {
       e.preventDefault();
       const nombre = $('#cl-nombre', b).value.trim();
       if (!nombre) return aviso('Escribe el nombre', true);
-      const dato = { nombre, telefono: $('#cl-tel', b).value.trim(), notas: $('#cl-notas', b).value.trim() };
+      const dato = { nombre, telefono: $('#cl-tel', b).value.trim(), notas: $('#cl-notas', b).value.trim(), documento: $('#cl-doc', b).value.trim().slice(0, 30) };
       const id = c ? c.id : 'c' + nuevoId();
       aplicar(() => { if (c) Object.assign(c, dato); else clientes.push({ id, ...dato }); }, 'Cliente guardado');
       cerrarHoja();
@@ -690,6 +698,7 @@ function verCliente(id) {
       return `<div class="pedido"><div class="top-line"><strong>${verFecha(v.fecha)}</strong><span class="badge ${est[0]}">${est[1]}</span></div>
         <div>${cantTxt(v)} × ${esc(p ? p.name : 'Producto eliminado')} a ${precioTxt(v).replace(' c/', ' por ')}</div>
         <div>Total ${money(v.total)}${v.tipoPago === 'credito' ? ` · abonado ${money(ab)} · <strong>debe ${money(resta)}</strong>` : ' · contado'}</div>
+        <div><button class="link-btn neutro" data-act="comprobante" data-id="${esc(v.id)}">Ver comprobante${v.numero ? ' N° ' + esc(numeroTxt(v.numero)) : ''}</button></div>
         ${resta > 0 ? `<div class="btn-row"><button class="btn btn-sm btn-teal" data-act="abonar" data-venta="${esc(v.id)}">Abonar</button><button class="btn btn-sm btn-sun" data-act="pagar" data-id="${esc(v.id)}">Pagó completo</button></div>` : ''}</div>`;
     }).join('') : '<p class="empty">Todavía no tiene pedidos.</p>'}`);
 }
@@ -823,11 +832,13 @@ function aplicarPagoProveedor(provId, entradaId, monto) {
 function resultadoPagoProveedor(provId, pagado, detalle) {
   const pv = proveedor(provId), falta = deudaProveedor(provId);
   hoja('Pago registrado', `
+    <div class="no-print">
     <div class="stats" style="margin-bottom:12px"><div class="stat teal"><div class="n">${money(pagado)}</div><div class="l">Pagaste</div></div>
       <div class="stat ${falta > 0 ? 'red' : 'teal'}"><div class="n">${money(falta)}</div><div class="l">${falta > 0 ? 'Falta por pagar' : 'Estás al día'}</div></div></div>
     <p class="muted" style="margin-bottom:8px">${esc(pv ? pv.nombre : 'Proveedor')} · ${verFecha(hoy())}</p>
     ${detalle.map(d => { const p = prod(d.productoId); return `<div class="row"><div class="main"><div class="t">${verFecha(d.fecha)} · ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">Pagaste ${money(d.aplicado)} de ${money(d.total)}</div></div><div class="r"><strong class="${d.resta > 0 ? 'neg' : 'pos'}">${d.resta > 0 ? 'faltan ' + money(d.resta) : 'Pagada'}</strong></div></div>`; }).join('')}
-    <div class="btn-row"><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+    <div class="btn-row"><button class="btn btn-teal" data-act="imprimir-doc">Imprimir comprobante</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div></div>
+    <div class="solo-impresion">${comprobantePagoHTML(provId, pagado, detalle)}</div>`);
 }
 function formPagoProveedor({ proveedorId, entradaId }) {
   const e0 = entradaId ? entradas.find(x => x.id === entradaId) : null;
@@ -952,6 +963,73 @@ VISTAS.graficos = () => {
       ${tot.perdidas > 0 ? `<p class="muted" style="margin-top:10px">Pérdidas del período (huevos rotos, vencidos): ${money(tot.perdidas)}.</p>` : ''}</section>`
     : '<section class="card"><p class="empty">Todavía no hay ventas ni compras en este período. Cuando registres movimientos, aquí verás cómo van tus ganancias.</p></section>'}`;
 };
+
+/* =============== Comprobante de venta =============== */
+/* Documento formal para imprimir: encabezado del negocio, número consecutivo, cliente, detalle, totales, saldo y firmas.
+   Es una base de control interno que ya reúne los datos que pide una factura (emisor, adquirente, consecutivo, detalle,
+   valores, forma de pago), pero NO es una factura electrónica de venta ante la DIAN. */
+const numeroTxt = n => { const pf = (config.negocio && config.negocio.prefijo) || ''; return `${pf}${pf ? '-' : ''}${String(n).padStart(6, '0')}`; };
+
+// Las ventas de un mismo cliente en el mismo día salen juntas en un comprobante; una vez numerado, el grupo queda fijo.
+function grupoComprobante(v) {
+  if (v.numero) return ventas.filter(x => x.numero === v.numero);
+  if (!v.clienteId) return [v];
+  return ventas.filter(x => x.clienteId === v.clienteId && x.fecha === v.fecha && !x.numero);
+}
+// Asigna el siguiente número a todo el grupo y avanza el consecutivo. Devuelve false si no se pudo guardar.
+function numerarGrupo(grupo) {
+  return aplicar(() => { const n = config.consecutivo; grupo.forEach(x => { x.numero = n; }); config.consecutivo = n + 1; }, '');
+}
+function comprobanteHTML(grupo) {
+  const neg = config.negocio, v0 = grupo[0], c = cliente(v0.clienteId);
+  const total = grupo.reduce((s, v) => s + v.total, 0), saldo = grupo.reduce((s, v) => s + debeVenta(v), 0), pagado = total - saldo;
+  const credito = grupo.some(v => v.tipoPago === 'credito');
+  const filas = grupo.map(v => {
+    const p = prod(v.productoId), panal = v.panales != null && v.panales > 0;
+    return `<tr><td>${esc(p ? p.name : 'Producto eliminado')}${panal ? `<small> · panal de ${num(v.cantidad / v.panales)} u.</small>` : ''}</td><td class="num">${panal ? num(v.panales) + (v.panales === 1 ? ' panal' : ' panales') : num(v.cantidad) + ' ' + esc(p ? p.unit : '')}</td><td class="num">${money(panal ? v.precioPanal : v.precio)}</td><td class="num">${money(v.total)}</td></tr>`;
+  }).join('');
+  const linea = (t, v) => (v ? `<div>${t}${esc(v)}</div>` : '');
+  return `<article class="doc">
+    <header class="doc-head">
+      <div class="doc-emisor"><h2>${esc(neg.nombre || 'El Gallinero')}</h2>${linea('NIT / CC: ', neg.nit)}${linea('', neg.direccion)}${linea('', [neg.ciudad, neg.telefono].filter(Boolean).join(' · '))}</div>
+      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE VENTA</div><div class="doc-n">N° ${esc(numeroTxt(v0.numero))}</div><div>Fecha: ${verFecha(v0.fecha)}</div></div>
+    </header>
+    <section class="doc-cliente"><h3>Cliente</h3>
+      <div><strong>${esc(c ? c.nombre : 'Consumidor final (mostrador)')}</strong></div>${c ? linea('Cédula / NIT: ', c.documento) + linea('Teléfono: ', c.telefono) + linea('Dirección / notas: ', c.notas) : ''}</section>
+    <table class="doc-tabla"><thead><tr><th>Descripción</th><th class="num">Cantidad</th><th class="num">V. unitario</th><th class="num">V. total</th></tr></thead><tbody>${filas}</tbody></table>
+    <div class="doc-totales">
+      <div><span>Forma de pago</span><strong>${credito ? 'Crédito' : 'Contado'}</strong></div>
+      <div><span>Total</span><strong>${money(total)}</strong></div>
+      ${credito ? `<div><span>Abonado</span><strong>${money(pagado)}</strong></div><div class="doc-saldo"><span>Saldo pendiente</span><strong>${money(saldo)}</strong></div>` : ''}
+    </div>
+    <div class="doc-firmas"><div>Entrega</div><div>Recibe</div></div>
+    <p class="doc-nota">Comprobante de venta de control interno. No es una factura electrónica de venta ni reemplaza la expedida ante la DIAN.</p>
+  </article>`;
+}
+function comprobantePagoHTML(provId, pagado, detalle) {
+  const neg = config.negocio, pv = proveedor(provId), falta = deudaProveedor(provId);
+  const filas = detalle.map(d => { const p = prod(d.productoId); return `<tr><td>${verFecha(d.fecha)} · ${esc(p ? p.name : 'Producto eliminado')}</td><td class="num">${money(d.total)}</td><td class="num">${money(d.aplicado)}</td><td class="num">${money(d.resta)}</td></tr>`; }).join('');
+  return `<article class="doc">
+    <header class="doc-head"><div class="doc-emisor"><h2>${esc(neg.nombre || 'El Gallinero')}</h2>${neg.nit ? `<div>NIT / CC: ${esc(neg.nit)}</div>` : ''}</div>
+      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE PAGO A PROVEEDOR</div><div>Fecha: ${verFecha(hoy())}</div></div></header>
+    <section class="doc-cliente"><h3>Proveedor</h3><div><strong>${esc(pv ? pv.nombre : 'Proveedor')}</strong></div>${pv && pv.telefono ? `<div>Teléfono: ${esc(pv.telefono)}</div>` : ''}</section>
+    <table class="doc-tabla"><thead><tr><th>Compra</th><th class="num">Valor</th><th class="num">Pagado ahora</th><th class="num">Saldo</th></tr></thead><tbody>${filas}</tbody></table>
+    <div class="doc-totales"><div><span>Total pagado</span><strong>${money(pagado)}</strong></div><div class="doc-saldo"><span>Falta por pagar</span><strong>${money(falta)}</strong></div></div>
+    <div class="doc-firmas"><div>Paga</div><div>Recibe</div></div>
+  </article>`;
+}
+function abrirComprobante(id) {
+  const v = ventas.find(x => x.id === id); if (!v) return;
+  if (!v.numero && !numerarGrupo(grupoComprobante(v))) return;
+  const grupo = grupoComprobante(ventas.find(x => x.id === id));
+  hoja('Comprobante de venta', `${comprobanteHTML(grupo)}<div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc">Imprimir</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+  repintar();
+}
+function imprimirDocumento() {
+  document.body.classList.add('imprime-doc');
+  window.print();
+  setTimeout(() => document.body.classList.remove('imprime-doc'), 1000); // por si el navegador no avisa al terminar
+}
 
 /* =============== Más =============== */
 VISTAS.mas = () => `
@@ -1168,6 +1246,22 @@ VISTAS.ajustes = () => `
     <label class="field"><span>Vida útil del huevo (días)</span><input id="aj-vida" type="number" inputmode="numeric" min="7" max="60" value="${esc(config.vidaUtil)}"><div class="hint">Contada desde que sale de la granja. En clima cálido, entre 15 y 25 días.</div></label>
     <button class="btn btn-teal" type="submit">Guardar ajustes</button>
   </form>
+  <form id="f-neg" class="card" novalidate>
+    <h3>Datos del negocio</h3>
+    <p class="muted" style="margin-bottom:12px">Salen en el encabezado del comprobante de venta.</p>
+    <label class="field"><span>Nombre o razón social</span><input id="ng-nombre" type="text" value="${esc(config.negocio.nombre)}" autocomplete="off"></label>
+    <label class="field"><span>NIT o cédula</span><input id="ng-nit" type="text" value="${esc(config.negocio.nit)}" autocomplete="off"></label>
+    <label class="field"><span>Dirección</span><input id="ng-dir" type="text" value="${esc(config.negocio.direccion)}" autocomplete="off"></label>
+    <div class="row2">
+      <label class="field"><span>Ciudad</span><input id="ng-ciudad" type="text" value="${esc(config.negocio.ciudad)}" autocomplete="off"></label>
+      <label class="field"><span>Teléfono</span><input id="ng-tel" type="tel" inputmode="tel" value="${esc(config.negocio.telefono)}"></label>
+    </div>
+    <div class="row2">
+      <label class="field"><span>Prefijo</span><input id="ng-prefijo" type="text" maxlength="6" value="${esc(config.negocio.prefijo)}" autocomplete="off"><div class="hint">Hasta 6 letras o números. Ej: CV</div></label>
+      <label class="field"><span>Próximo número</span><input id="ng-consec" type="number" inputmode="numeric" min="1" step="1" value="${esc(config.consecutivo)}"><div class="hint">Para seguir tu propia numeración</div></label>
+    </div>
+    <button class="btn btn-teal" type="submit">Guardar datos del negocio</button>
+  </form>
   <p class="muted" style="margin-top:12px">Versión de la app: <span id="aj-version">—</span></p>`;
 MONTAR.ajustes = () => {
   if (typeof caches !== 'undefined' && caches && caches.keys) caches.keys().then(ks => { $('#aj-version').textContent = ks.find(k => k.startsWith('el-gallinero-')) || 'sin caché'; }).catch(() => {});
@@ -1176,6 +1270,14 @@ MONTAR.ajustes = () => {
     const m = leerNum($('#aj-margen').value), a = leerNum($('#aj-alerta').value), v = leerNum($('#aj-vida').value);
     if (!(enRango(m) && m <= 500) || !(Number.isInteger(a) && enRango(a)) || !(Number.isInteger(v) && v >= 1 && v <= 365)) return aviso('Revisa los valores', true);
     aplicar(() => { config.margen = m; config.alerta = a; config.vidaUtil = v; }, 'Ajustes guardados');
+  });
+  $('#f-neg').addEventListener('submit', e => {
+    e.preventDefault();
+    const prefijo = $('#ng-prefijo').value.trim(), consec = leerNum($('#ng-consec').value);
+    if (!/^[A-Za-z0-9]{0,6}$/.test(prefijo)) return aviso('El prefijo solo admite hasta 6 letras o números', true);
+    if (!(Number.isInteger(consec) && consec >= 1 && consec <= 999999999)) return aviso('El próximo número debe ser un entero desde 1', true);
+    const t = (id, max) => $(id).value.trim().slice(0, max);
+    aplicar(() => { config.negocio = { nombre: t('#ng-nombre', 100) || 'El Gallinero', nit: t('#ng-nit', 30), direccion: t('#ng-dir', 150), telefono: t('#ng-tel', 30), ciudad: t('#ng-ciudad', 60), prefijo: prefijo.toUpperCase() }; config.consecutivo = consec; }, 'Datos del negocio guardados');
   });
 };
 
@@ -1396,6 +1498,8 @@ const ACCIONES = {
   cerrar: () => cerrarHoja(),
   paso: el => { const i = $('#' + el.dataset.t); i.value = Math.max(1, (parseInt(i.value, 10) || 0) + parseInt(el.dataset.d, 10)); i.dispatchEvent(new Event('input', { bubbles: true })); },
   'graf-tipo': el => { grafTipo = el.dataset.t; repintar(); },
+  comprobante: el => abrirComprobante(Number(el.dataset.id)),
+  'imprimir-doc': () => imprimirDocumento(),
   'cliente-nuevo': el => formCliente(null, el.dataset.vuelta),
   'proveedor-nuevo': el => formProveedor(null, el.dataset.vuelta),
   'proveedor-ver': el => verProveedor(el.dataset.id),
@@ -1498,6 +1602,7 @@ function mostrarActualizacion() {
 if (errorArranque) pantallaRecuperacion(errorArranque);
 else {
   sync = leerSync();
+  window.addEventListener('afterprint', () => document.body.classList.remove('imprime-doc'));
   window.addEventListener('online', () => { if (sync && sync.listo && sync.pendiente) programarSync(); });
   if (sync && sync.listo && sync.pendiente) programarSync();
   try { pintar(); if (avisoArranque) aviso(avisoArranque, true); } catch (e) { pantallaRecuperacion(e); }

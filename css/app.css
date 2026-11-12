@@ -288,3 +288,39 @@ details.datos summary { cursor: pointer; font-weight: 700; font-size: .86rem; co
 .leyenda i.g-s0 { background: var(--teal); }
 .leyenda i.g-s1 { background: var(--sun); }
 .leyenda i.g-s2 { background: var(--orange); }
+
+/* ---------- Comprobante (se ve en pantalla y se imprime) ---------- */
+.link-btn.neutro { color: var(--teal); }
+.solo-impresion { display: none; }
+.doc { background: #fff; color: #000; border: 1.5px solid var(--ink); border-radius: 6px; padding: 16px; font-size: .84rem; line-height: 1.45; margin-bottom: 12px; }
+.doc h2 { font-family: var(--display); font-weight: 400; font-size: 1.15rem; line-height: 1.15; margin-bottom: 4px; }
+.doc h3 { font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: #444; margin-bottom: 4px; }
+.doc-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-bottom: 10px; border-bottom: 2px solid #000; margin-bottom: 10px; }
+.doc-num { text-align: right; margin-left: auto; }
+.doc-tipo { font-weight: 800; letter-spacing: .04em; }
+.doc-n { font-size: 1.05rem; font-weight: 800; }
+.doc-cliente { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #999; }
+.doc-tabla { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+.doc-tabla th, .doc-tabla td { padding: 6px 4px; text-align: left; border-bottom: 1px solid #bbb; vertical-align: top; }
+.doc-tabla th { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 2px solid #000; }
+.doc-tabla .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.doc-tabla small { color: #444; }
+.doc-totales { margin-left: auto; width: min(100%, 280px); }
+.doc-totales div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.doc-totales .doc-saldo { border-top: 2px solid #000; margin-top: 4px; padding-top: 6px; font-size: 1rem; }
+.doc-firmas { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin: 34px 0 10px; }
+.doc-firmas div { border-top: 1px solid #000; padding-top: 4px; text-align: center; font-size: .75rem; color: #444; }
+.doc-nota { font-size: .68rem; color: #555; }
+
+@media print {
+  body.imprime-doc { overflow: visible !important; height: auto !important; padding: 0; background: #fff; }
+  body.imprime-doc #vista, body.imprime-doc .top, body.imprime-doc .stripes, body.imprime-doc .nav,
+  body.imprime-doc .sheet-back, body.imprime-doc .sheet-head, body.imprime-doc .toast, body.imprime-doc .update-bar { display: none !important; }
+  body.imprime-doc .sheet-wrap { position: static; display: block; }
+  body.imprime-doc .sheet { position: static; max-height: none; overflow: visible; max-width: none; width: auto; border: 0; border-radius: 0; box-shadow: none; background: #fff; padding: 0; animation: none; }
+  body.imprime-doc .no-print { display: none !important; }
+  body.imprime-doc .solo-impresion { display: block; }
+  body.imprime-doc .doc { border: 0; padding: 0; font-size: 11pt; }
+  body.imprime-doc .doc h2 { font-size: 16pt; }
+  @page { margin: 14mm; }
+}
