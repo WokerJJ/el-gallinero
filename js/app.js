@@ -48,7 +48,7 @@ const CLAVES = { products: 'eg_products', entradas: 'eg_entradas', ventas: 'eg_v
 const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, schemaVersion: SCHEMA });
 
 let aviso_t; // se declara antes de cualquier uso: migrar() y guardar() pueden llamar a aviso() al arrancar
-let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], config = configBase();
+let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], config = configBase();
 let errorArranque = null, avisoArranque = '';
 let sync = null, syncEnCurso = false, syncTimer = null; // conexión con Google Sheets (ver más abajo)
 
@@ -65,6 +65,7 @@ const rFecha = x => (fechaOk(x) ? x : mal());
 const SANEAR = {
   products: r => ({ id: rSid(r.id), name: rTxt(r.name) || mal(), unit: rTxt(r.unit, 'unidades'), cost: rNum(r.cost, 0), price: rNum(r.price, 0), stock: rNum(r.stock, 0), lastCost: rNum(r.lastCost, 0), control: controlDe(r), panal: rPanal(r) }),
   clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }),
+  proveedores: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }),
   entradas: r => {
     const cantidad = rNum(r.cantidad), costoUnitario = rNum(r.costoUnitario, 0);
     const o = { id: rId(r.id), productoId: rSid(r.productoId), cantidad, costoUnitario, total: rNum(r.total, cantidad * costoUnitario), fecha: rFecha(r.fecha), diasGranja: rNum(r.diasGranja, 0), notas: rTxt(r.notas) };
@@ -72,6 +73,9 @@ const SANEAR = {
     if (r.panales != null) { o.panales = rNum(r.panales); o.costoPanal = rNum(r.costoPanal, 0); }
     if (r.costoPrevio != null) o.costoPrevio = rNum(r.costoPrevio);
     if (r.lastCostPrevio != null) o.lastCostPrevio = rNum(r.lastCostPrevio);
+    if (r.proveedorId != null && r.proveedorId !== '') o.proveedorId = rSid(r.proveedorId);
+    o.pagado = rNum(r.pagado, o.total);
+    o.abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })) : mal();
     return o;
   },
   ajustes: r => ({ id: rId(r.id), productoId: rSid(r.productoId), cantidad: rNum(r.cantidad), costoUnitario: rNum(r.costoUnitario, 0), fecha: rFecha(r.fecha), motivo: rTxt(r.motivo) }),
@@ -92,7 +96,7 @@ function sanearConfig(c) {
 function limpiar(crudo) {
   const d = crudo && typeof crudo === 'object' ? crudo : {};
   const datos = {}, errores = [];
-  for (const k of ['products', 'entradas', 'ventas', 'clientes', 'ajustes']) {
+  for (const k of ['products', 'entradas', 'ventas', 'clientes', 'ajustes', 'proveedores']) {
     datos[k] = [];
     if (d[k] == null) continue;
     if (!Array.isArray(d[k])) { errores.push(`${k}: no es una lista`); continue; }
@@ -111,8 +115,8 @@ function migrar(d) {
   d.entradas = d.entradas.filter(e => e.cantidad > 0);
   return true;
 }
-const estado = () => ({ products, entradas, ventas, clientes, ajustes, config });
-const poner = d => { ({ products, entradas, ventas, clientes, ajustes, config } = d); if (!products.length) products = clonar(PRODUCTOS_BASE); };
+const estado = () => ({ products, entradas, ventas, clientes, ajustes, proveedores, config });
+const poner = d => { ({ products, entradas, ventas, clientes, ajustes, proveedores, config } = d); if (!products.length) products = clonar(PRODUCTOS_BASE); };
 
 // Un solo setItem: o se guarda todo o no se guarda nada.
 function guardar() {
@@ -251,7 +255,7 @@ const ICONOS = {
 const icono = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS[n]}</svg>`;
 
 const NAV = [['inicio', 'Inicio'], ['vender', 'Vender'], ['comprar', 'Comprar'], ['clientes', 'Clientes'], ['mas', 'Más']];
-const SUBVISTAS = ['productos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
+const SUBVISTAS = ['productos', 'proveedores', 'reportes', 'respaldo', 'sheets', 'ajustes'];
 
 function aviso(msg, error = false) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -334,6 +338,7 @@ VISTAS.inicio = () => {
   const totSem = vs.reduce((s, v) => s + v.total, 0);
   const ganSem = totSem - vs.reduce((s, v) => s + costoVenta(v), 0);
   const deuda = deudaTotal();
+  const deudaProv = deudaProveedores();
   const al = alertasVencimiento();
   const fechaLarga = new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' }).replace(/ De /g, ' de ');
 
@@ -368,6 +373,7 @@ VISTAS.inicio = () => {
         <div class="stat ${deuda > 0 ? 'red' : ''}"><div class="n">${money(deuda)}</div><div class="l">Me deben</div></div>
       </div>
       ${deuda > 0 ? '<button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="clientes">Ver quién me debe</button>' : ''}
+      ${deudaProv > 0 ? `<div class="stat red" style="margin-top:12px"><div class="n">${money(deudaProv)}</div><div class="l">Debo a proveedores</div></div><button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="proveedores">Ver cuentas por pagar</button>` : ''}
     </section>
     <section class="card"><h3>Frescura</h3>${alertasHtml}</section>
     <section class="card"><h3>En bodega</h3><div class="list">${stockHtml}</div>
@@ -499,6 +505,8 @@ MONTAR.vender = () => {
 };
 
 /* =============== Comprar (entradas) =============== */
+let memoCompra = { proveedorId: '', pago: 'todo' };
+const opcionesProveedores = sel => '<option value="">Sin proveedor</option>' + proveedores.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map(c => `<option value="${esc(c.id)}" ${c.id === sel ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
 VISTAS.comprar = () => {
   const rec = entradas.slice().sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id).slice(0, 12);
   return `
@@ -514,17 +522,25 @@ VISTAS.comprar = () => {
         <label class="field"><span id="e-costo-lbl">Costo por unidad</span><input id="e-costo" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
       </div>
       <button type="button" class="btn btn-sm btn-ghost" id="e-usar" style="margin:-4px 0 14px">Usar el precio de la vez anterior</button>
-      <div class="total-line"><span>Total a pagar</span><strong id="e-total">$0</strong></div>
+      <div class="total-line"><span>Total de la compra</span><strong id="e-total">$0</strong></div>
+      <div class="seg" role="radiogroup" aria-label="Pago al proveedor">
+        <label><input type="radio" name="epago" value="todo" ${memoCompra.pago !== 'parcial' ? 'checked' : ''}><span>Pagué todo</span></label>
+        <label><input type="radio" name="epago" value="parcial" ${memoCompra.pago === 'parcial' ? 'checked' : ''}><span>Queda debiendo</span></label>
+      </div>
+      <label class="field" id="e-pagado-box" hidden><span>Pagué hoy (el resto queda por pagar)</span><input id="e-pagado" type="number" inputmode="decimal" min="0" step="any" placeholder="0"><div class="hint" id="e-resta"></div></label>
       <div class="row2 fechas">
         <label class="field"><span>Fecha de llegada</span><input id="e-fecha" type="date" value="${hoy()}"></label>
         <label class="field" id="e-b-granja"><span>Días en la granja</span><input id="e-dias" type="number" inputmode="numeric" min="0" max="30" value="2"><div class="hint">Cuántos días llevaba recogido</div></label>
         <label class="field" id="e-b-vence" hidden><span>Fecha de vencimiento</span><input id="e-vence" type="date"><div class="hint">La que dice el empaque</div></label>
       </div>
-      <label class="field"><span>Finca / proveedor (opcional)</span><input id="e-notas" type="text" placeholder="Ej: Finca La Esperanza"></label>
+      <div class="field"><span id="e-prov-lbl">Finca / proveedor (opcional)</span>
+        <div class="inline-add"><select id="e-prov" aria-labelledby="e-prov-lbl">${opcionesProveedores(memoCompra.proveedorId)}</select><button type="button" class="btn btn-teal" data-act="proveedor-nuevo" data-vuelta="compra" aria-label="Nuevo proveedor">+</button></div>
+      </div>
+      <label class="field"><span>Notas (opcional)</span><input id="e-notas" type="text" placeholder="Ej: lote de la mañana"></label>
       <button class="btn btn-teal btn-big" type="submit">Guardar entrada</button>
     </form>
     <section class="card"><h3>Últimas entradas</h3>
-      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${e.panales != null ? money(e.costoPanal) + ' c/panal' : money(e.costoUnitario) + ' c/u'}${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
+      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${e.panales != null ? money(e.costoPanal) + ' c/panal' : money(e.costoUnitario) + ' c/u'}${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.proveedorId && proveedor(e.proveedorId) ? ' · ' + esc(proveedor(e.proveedorId).nombre) : ''}${e.proveedorId && debeEntrada(e) > 0 ? ' · <strong class="neg">debes ' + money(debeEntrada(e)) + '</strong>' : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
 };
 MONTAR.comprar = () => {
   const f = $('#f-entrada');
@@ -548,12 +564,25 @@ MONTAR.comprar = () => {
     $('#e-b-granja').hidden = !p || p.control !== 'granja';
     $('#e-b-vence').hidden = !p || p.control !== 'vencimiento';
   };
-  const calc = () => { $('#e-total').textContent = money((parseFloat($('#e-cant').value) || 0) * (parseFloat($('#e-costo').value) || 0)); };
+  const pagoModo = () => (f.querySelector('input[name=epago]:checked') || {}).value;
+  const calc = () => {
+    const total = (parseFloat($('#e-cant').value) || 0) * (parseFloat($('#e-costo').value) || 0);
+    $('#e-total').textContent = money(total);
+    const pagado = parseFloat($('#e-pagado').value) || 0;
+    $('#e-resta').textContent = pagoModo() === 'parcial' && total > 0 && pagado >= 0 && pagado < total ? `Quedará por pagar ${money(total - pagado)}` : '';
+  };
+  const alternarPago = () => {
+    const parcial = pagoModo() === 'parcial';
+    $('#e-pagado-box').hidden = !parcial;
+    $('#e-prov-lbl').textContent = parcial ? 'Finca / proveedor (obligatorio si queda debiendo)' : 'Finca / proveedor (opcional)';
+    calc();
+  };
+  f.querySelectorAll('input[name=epago]').forEach(r => r.addEventListener('change', alternarPago));
   $('#e-prod').addEventListener('change', () => { const r = f.querySelector('input[name=euni][value=panal]'); if (r) r.checked = true; pista(); });
   f.querySelectorAll('input[name=euni]').forEach(r => r.addEventListener('change', pista));
   f.addEventListener('input', calc);
   $('#e-usar').addEventListener('click', () => { const p = prod($('#e-prod').value); if (p) { $('#e-costo').value = Math.round((p.lastCost || p.cost) * factor() * 100) / 100; calc(); aviso('Precio anterior aplicado'); } });
-  pista();
+  pista(); alternarPago();
   f.addEventListener('submit', e => {
     e.preventDefault();
     const p = prod($('#e-prod').value);
@@ -570,13 +599,23 @@ MONTAR.comprar = () => {
     if (p.control === 'vencimiento' && !fechaOk(vence)) return aviso('Escribe la fecha de vencimiento', true);
     if (vence && vence < fecha) return aviso('La fecha de vencimiento es anterior a la llegada', true);
     const notas = $('#e-notas').value.trim();
+    const proveedorId = $('#e-prov').value || null, parcial = pagoModo() === 'parcial';
+    let pagado = total; const abonos = [];
+    if (parcial) {
+      if (!proveedorId) return aviso('Si queda debiendo, elige a quién (o crea el proveedor con +)', true);
+      const txt = String($('#e-pagado').value ?? '').trim(), hoyPaga = txt === '' ? 0 : leerNum(txt);
+      if (!enRango(hoyPaga)) return aviso('El valor pagado no es válido', true);
+      if (hoyPaga >= total) return aviso('Pagaste todo: elige «Pagué todo»', true);
+      pagado = hoyPaga; if (hoyPaga > 0) abonos.push({ fecha, monto: hoyPaga });
+    }
     aplicar(() => {
       const stockPrevio = p.stock, costoPrevio = p.cost || 0, lastCostPrevio = p.lastCost || 0;
       p.stock = stockPrevio + cantidad;
       p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 100) / 100 : costo;
       p.lastCost = costo;
-      entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), notas, costoPrevio, lastCostPrevio });
-    }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}`);
+      entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, costoPrevio, lastCostPrevio });
+    }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${parcial ? ' · debes ' + money(total - pagado) : ''}`);
+    memoCompra = { proveedorId: proveedorId || '', pago: parcial ? 'parcial' : 'todo' };
     repintar();
   });
 };
@@ -690,11 +729,136 @@ function whatsapp(id) {
   window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank', 'noopener');
 }
 
+/* =============== Proveedores y cuentas por pagar =============== */
+/* Lo que se le debe a las fincas: una compra puede pagarse en parte el día que llega y abonarse después. Es el espejo de
+   «clientes que me deben», pero al revés. Las compras anteriores se consideran pagadas por completo. */
+const debeEntrada = e => Math.max(0, e.total - (e.pagado ?? e.total));
+const proveedor = id => proveedores.find(x => x.id === id);
+const deudaProveedor = id => entradas.reduce((s, e) => s + (e.proveedorId === id ? debeEntrada(e) : 0), 0);
+const deudaProveedores = () => entradas.reduce((s, e) => s + (e.proveedorId ? debeEntrada(e) : 0), 0);
+
+VISTAS.proveedores = () => {
+  const total = deudaProveedores();
+  const lista = proveedores.slice().sort((a, b) => deudaProveedor(b.id) - deudaProveedor(a.id) || a.nombre.localeCompare(b.nombre, 'es'));
+  return `
+    ${cabecera('Proveedores', 'mas')}
+    <div class="card">
+      <div class="stats" style="margin-bottom:12px"><div class="stat ${total > 0 ? 'red' : 'teal'}"><div class="n">${money(total)}</div><div class="l">${total > 0 ? 'Debo en total' : 'Estás al día'}</div></div>
+        <div class="stat"><div class="n">${proveedores.length}</div><div class="l">Proveedores</div></div></div>
+      <button class="btn btn-teal" data-act="proveedor-nuevo">+ Nuevo proveedor</button>
+    </div>
+    <div class="card">${lista.length ? `<div class="list">${lista.map(p => {
+      const d = deudaProveedor(p.id), np = entradas.filter(e => e.proveedorId === p.id && debeEntrada(e) > 0).length;
+      return `<button class="row" data-act="proveedor-ver" data-id="${esc(p.id)}"><div class="main"><div class="t">${esc(p.nombre)}</div><div class="s">${esc(p.telefono || 'Sin teléfono')}${np ? ` · ${np} compra${np > 1 ? 's' : ''} por pagar` : ''}</div></div><div class="r"><strong class="${d > 0 ? 'neg' : 'pos'}">${d > 0 ? money(d) : 'Al día'}</strong></div></button>`;
+    }).join('')}</div>` : '<p class="empty">Aún no tienes proveedores. Crea uno aquí, o desde Comprar con el botón +.</p>'}</div>`;
+};
+
+function formProveedor(pv, vuelta) {
+  hoja(pv ? 'Editar proveedor' : 'Nuevo proveedor', `
+    <form id="f-prov" novalidate>
+      <label class="field"><span>Nombre (finca o proveedor)</span><input id="pv-nombre" type="text" value="${esc(pv ? pv.nombre : '')}" autocomplete="off"></label>
+      <label class="field"><span>Teléfono</span><input id="pv-tel" type="tel" inputmode="tel" value="${esc(pv ? pv.telefono : '')}"></label>
+      <label class="field"><span>Notas</span><textarea id="pv-notas" rows="2">${esc(pv ? pv.notas : '')}</textarea></label>
+      <button class="btn btn-teal" type="submit">Guardar</button>
+      ${pv && !entradas.some(e => e.proveedorId === pv.id) ? '<div class="btn-row"><button class="btn btn-ghost" type="button" id="pv-del">Eliminar proveedor</button></div>' : ''}
+    </form>`, b => {
+    $('#f-prov', b).addEventListener('submit', e => {
+      e.preventDefault();
+      const nombre = $('#pv-nombre', b).value.trim();
+      if (!nombre) return aviso('Escribe el nombre', true);
+      const dato = { nombre: nombre.slice(0, 100), telefono: $('#pv-tel', b).value.trim().slice(0, 30), notas: $('#pv-notas', b).value.trim().slice(0, 300) };
+      let id;
+      if (pv) id = pv.id; else id = 'f' + nuevoId();
+      aplicar(() => { if (pv) Object.assign(pv, dato); else proveedores.push({ id, ...dato }); }, 'Proveedor guardado');
+      cerrarHoja();
+      if (vuelta === 'compra') { const pg = $('input[name=epago]:checked'); memoCompra = { proveedorId: id, pago: pg ? pg.value : memoCompra.pago }; }
+      repintar();
+    });
+    const del = $('#pv-del', b);
+    if (del) del.addEventListener('click', () => { aplicar(() => { proveedores = proveedores.filter(x => x.id !== pv.id); }, 'Proveedor eliminado'); cerrarHoja(); repintar(); });
+  });
+}
+
+function verProveedor(id) {
+  const pv = proveedor(id); if (!pv) return;
+  const compras = entradas.filter(e => e.proveedorId === id).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+  const d = deudaProveedor(id);
+  hoja(pv.nombre, `
+    <p class="muted">${esc(pv.telefono || 'Sin teléfono')}${pv.notas ? ' · ' + esc(pv.notas) : ''}</p>
+    <div class="stats" style="margin:12px 0"><div class="stat ${d > 0 ? 'red' : 'teal'}"><div class="n">${money(d)}</div><div class="l">${d > 0 ? 'Le debes en total' : 'Estás al día'}</div></div>
+      <div class="stat"><div class="n">${compras.length}</div><div class="l">Compras</div></div></div>
+    <div class="btn-row">
+      ${d > 0 ? `<button class="btn btn-teal" data-act="pagar-proveedor" data-prov="${esc(id)}">Registrar pago</button>` : ''}
+      <button class="btn btn-ghost" data-act="proveedor-editar" data-id="${esc(id)}">Editar</button>
+    </div>
+    <h3 style="margin:18px 0 10px">Compras</h3>
+    ${compras.length ? compras.map(e => {
+      const p = prod(e.productoId), pag = e.pagado ?? e.total, resta = debeEntrada(e);
+      const est = resta <= 0 ? ['ok', 'Pagada'] : pag > 0 ? ['low', 'Pago parcial'] : ['out', 'Sin pagar'];
+      return `<div class="pedido"><div class="top-line"><strong>${verFecha(e.fecha)}</strong><span class="badge ${est[0]}">${est[1]}</span></div>
+        <div>${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div>
+        <div>Total ${money(e.total)} · pagado ${money(pag)} · <strong>falta ${money(resta)}</strong></div>
+        ${resta > 0 ? `<div class="btn-row"><button class="btn btn-sm btn-teal" data-act="pagar-proveedor" data-prov="${esc(id)}" data-entrada="${esc(e.id)}">Pagar</button><button class="btn btn-sm btn-sun" data-act="pagar-compra-completa" data-id="${esc(e.id)}">Pagar lo que falta</button></div>` : ''}</div>`;
+    }).join('') : '<p class="empty">Todavía no hay compras a este proveedor.</p>'}`);
+}
+
+// Aplica un pago a las compras (la indicada, o las más viejas primero) y devuelve el detalle para mostrarlo.
+function aplicarPagoProveedor(provId, entradaId, monto) {
+  const detalle = [];
+  const ok = aplicar(() => {
+    const objetivo = entradaId ? entradas.filter(x => x.id === entradaId) : entradas.filter(x => x.proveedorId === provId && debeEntrada(x) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
+    let resto = monto;
+    for (const x of objetivo) {
+      if (resto <= 0) break;
+      const aplica = Math.min(resto, debeEntrada(x));
+      x.pagado = (x.pagado ?? x.total) + aplica; (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto -= aplica;
+      detalle.push({ id: x.id, fecha: x.fecha, productoId: x.productoId, aplicado: aplica, resta: debeEntrada(x), total: x.total });
+    }
+  }, '');
+  return ok ? detalle : null;
+}
+// Después de pagar: dice cuánto se pagó y cuánto falta por pagar.
+function resultadoPagoProveedor(provId, pagado, detalle) {
+  const pv = proveedor(provId), falta = deudaProveedor(provId);
+  hoja('Pago registrado', `
+    <div class="stats" style="margin-bottom:12px"><div class="stat teal"><div class="n">${money(pagado)}</div><div class="l">Pagaste</div></div>
+      <div class="stat ${falta > 0 ? 'red' : 'teal'}"><div class="n">${money(falta)}</div><div class="l">${falta > 0 ? 'Falta por pagar' : 'Estás al día'}</div></div></div>
+    <p class="muted" style="margin-bottom:8px">${esc(pv ? pv.nombre : 'Proveedor')} · ${verFecha(hoy())}</p>
+    ${detalle.map(d => { const p = prod(d.productoId); return `<div class="row"><div class="main"><div class="t">${verFecha(d.fecha)} · ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">Pagaste ${money(d.aplicado)} de ${money(d.total)}</div></div><div class="r"><strong class="${d.resta > 0 ? 'neg' : 'pos'}">${d.resta > 0 ? 'faltan ' + money(d.resta) : 'Pagada'}</strong></div></div>`; }).join('')}
+    <div class="btn-row"><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+}
+function formPagoProveedor({ proveedorId, entradaId }) {
+  const e0 = entradaId ? entradas.find(x => x.id === entradaId) : null;
+  const pid = proveedorId || (e0 && e0.proveedorId);
+  const maximo = e0 ? debeEntrada(e0) : deudaProveedor(pid);
+  hoja('Registrar pago', `
+    <form id="f-pago-prov" novalidate>
+      <p class="muted" style="margin-bottom:12px">${e0 ? 'Pago a esta compra.' : 'Se aplica primero a las compras más viejas.'} Le debes ${money(maximo)}.</p>
+      <label class="field"><span>Monto que pagas</span><input id="pp-monto" type="number" inputmode="decimal" min="1" step="any" max="${esc(maximo)}" placeholder="0"></label>
+      <button class="btn btn-teal" type="submit">Guardar pago</button>
+    </form>`, b => $('#f-pago-prov', b).addEventListener('submit', ev => {
+    ev.preventDefault();
+    let monto = leerNum($('#pp-monto', b).value);
+    if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
+    if (monto > maximo) monto = maximo;
+    const detalle = aplicarPagoProveedor(pid, entradaId, monto);
+    if (!detalle) return;
+    cerrarHoja(); resultadoPagoProveedor(pid, monto, detalle); repintar();
+  }));
+}
+function pagarCompraCompleta(entradaId) {
+  const e = entradas.find(x => x.id === entradaId); if (!e || !e.proveedorId) return;
+  const monto = debeEntrada(e); if (monto <= 0) return;
+  const detalle = aplicarPagoProveedor(e.proveedorId, entradaId, monto);
+  if (!detalle) return;
+  cerrarHoja(); resultadoPagoProveedor(e.proveedorId, monto, detalle); repintar();
+}
+
 /* =============== Más =============== */
 VISTAS.mas = () => `
   ${cabecera('Más')}
   <div class="card menu"><div class="list">
-    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
+    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
       .map(([v, i, t, s]) => `<button class="row" data-act="ir" data-v="${v}"><span class="ico">${icono(i)}</span><span class="main"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">&rsaquo;</span></button>`).join('')}
   </div></div>
   <div class="card"><h3>Instalar en el celular</h3>
@@ -802,6 +966,7 @@ VISTAS.reportes = () => {
   const gan = totVentas - ven.reduce((s, v) => s + costoVenta(v), 0);
   const totPer = per.reduce((s, a) => s + a.cantidad * (a.costoUnitario || 0), 0);
   const porCobrar = ven.reduce((s, v) => s + (v.clienteId ? debeVenta(v) : 0), 0);
+  const porPagar = ent.reduce((s, e) => s + (e.proveedorId ? debeEntrada(e) : 0), 0);
   const agrupar = (arr, f) => { const m = new Map(); arr.forEach(x => { const o = m.get(x.productoId) || { c: 0, t: 0, k: 0 }; f(o, x); m.set(x.productoId, o); }); return [...m.entries()]; };
   const nombre = id => { const p = prod(id); return esc(p ? p.name : 'Producto eliminado'); };
   const gEnt = agrupar(ent, (o, e) => { o.c += e.cantidad; o.t += e.total; });
@@ -816,11 +981,12 @@ VISTAS.reportes = () => {
       <div class="stats" style="margin-bottom:16px">
         <div class="stat sun"><div class="n">${money(totVentas)}</div><div class="l">Vendido</div></div>
         <div class="stat teal"><div class="n ${gan < 0 ? 'neg' : ''}">${money(gan)}</div><div class="l">Ganancia bruta</div></div>
-        <div class="stat"><div class="n">${money(totCompras)}</div><div class="l">Pagado en compras</div></div>
+        <div class="stat"><div class="n">${money(totCompras)}</div><div class="l">Compras del período</div></div>
         <div class="stat ${porCobrar > 0 ? 'red' : ''}"><div class="n">${money(porCobrar)}</div><div class="l">Quedó por cobrar</div></div>
+        <div class="stat ${porPagar > 0 ? 'red' : ''}"><div class="n">${money(porPagar)}</div><div class="l">Quedó por pagar</div></div>
       </div>
       <div class="sec-title">Ventas</div>${gVen.length ? tabla(['Producto', 'Cant.', 'Total', 'Ganancia'], gVen.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td><td class="num ${o.t - o.k < 0 ? 'neg' : ''}">${money(o.t - o.k)}</td></tr>`), ['Total', num(gVen.reduce((s, [, o]) => s + o.c, 0)), money(totVentas), money(gan)]) : '<p class="empty">Sin ventas en este período.</p>'}
-      <div class="sec-title" style="margin-top:18px">Compras y llegadas</div>${gEnt.length ? tabla(['Producto', 'Cant.', 'Pagado'], gEnt.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td></tr>`), ['Total', num(gEnt.reduce((s, [, o]) => s + o.c, 0)), money(totCompras)]) : '<p class="empty">Sin compras en este período.</p>'}
+      <div class="sec-title" style="margin-top:18px">Compras y llegadas</div>${gEnt.length ? tabla(['Producto', 'Cant.', 'Valor'], gEnt.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td></tr>`), ['Total', num(gEnt.reduce((s, [, o]) => s + o.c, 0)), money(totCompras)]) : '<p class="empty">Sin compras en este período.</p>'}
       ${gPer.length ? `<div class="sec-title" style="margin-top:18px">Pérdidas</div>${tabla(['Producto', 'Cant.', 'Costo'], gPer.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td></tr>`), ['Total', num(gPer.reduce((s, [, o]) => s + o.c, 0)), money(totPer)])}` : ''}
     </section>
     <div class="btn-row no-print"><button class="btn btn-ghost" data-act="imprimir">Imprimir / PDF</button><button class="btn btn-ghost" data-act="csv">Exportar a Excel</button></div>`;
@@ -1131,6 +1297,11 @@ const ACCIONES = {
   cerrar: () => cerrarHoja(),
   paso: el => { const i = $('#' + el.dataset.t); i.value = Math.max(1, (parseInt(i.value, 10) || 0) + parseInt(el.dataset.d, 10)); i.dispatchEvent(new Event('input', { bubbles: true })); },
   'cliente-nuevo': el => formCliente(null, el.dataset.vuelta),
+  'proveedor-nuevo': el => formProveedor(null, el.dataset.vuelta),
+  'proveedor-ver': el => verProveedor(el.dataset.id),
+  'proveedor-editar': el => formProveedor(proveedor(el.dataset.id)),
+  'pagar-proveedor': el => formPagoProveedor({ proveedorId: el.dataset.prov, entradaId: el.dataset.entrada ? Number(el.dataset.entrada) : null }),
+  'pagar-compra-completa': el => pagarCompraCompleta(Number(el.dataset.id)),
   'cliente-ver': el => verCliente(el.dataset.id),
   'cliente-editar': el => formCliente(cliente(el.dataset.id)),
   'cliente-wa': el => whatsapp(el.dataset.id),
@@ -1152,7 +1323,7 @@ const ACCIONES = {
     const e = entradas.find(x => x.id === Number(el.dataset.id)); if (!e) return;
     const p0 = prod(e.productoId);
     if (p0 && p0.stock < e.cantidad) return aviso(`No se puede anular: ya se vendió parte de esta entrada (en bodega quedan ${num(p0.stock)} de ${num(e.cantidad)}).`, true);
-    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega. ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega.${e.proveedorId && (e.pagado ?? 0) > 0 ? ` Ya se habían pagado ${money(e.pagado)} al proveedor: ese pago deja de contarse.` : ''} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
     aplicar(() => {
       const p = prod(e.productoId), resto = entradas.filter(x => x.id !== e.id);
       if (p) {
@@ -1206,7 +1377,7 @@ const ACCIONES = {
   'json-import': () => $('#archivo-json').click(),
   'borrar-todo': async () => {
     if (!(await confirmar({ titulo: 'Borrar todos los datos', texto: 'Se borrarán productos, ventas, clientes y entradas de este teléfono. No se puede deshacer.', ok: 'Borrar todo', peligro: true }))) return;
-    aplicar(() => { products = clonar(PRODUCTOS_BASE); entradas = []; ventas = []; clientes = []; ajustes = []; config = configBase(); }, 'Datos borrados');
+    aplicar(() => { products = clonar(PRODUCTOS_BASE); entradas = []; ventas = []; clientes = []; ajustes = []; proveedores = []; config = configBase(); }, 'Datos borrados');
     navegar('inicio');
   },
 };
