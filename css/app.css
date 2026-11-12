@@ -158,6 +158,13 @@ a.row, button.row { width: 100%; background: none; border-left: 0; border-right:
 .field .hint { font-size: .8rem; color: var(--ink-soft); margin-top: 5px; font-weight: 400; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 380px) { .row2 { grid-template-columns: 1fr; } }
+/* iOS Safari: el campo de fecha trae un ancho propio y se sale de su celda, montándose sobre el vecino.
+   Las celdas de la rejilla pueden encogerse, el campo se adapta al ancho y, en pantallas angostas,
+   las filas con fechas pasan a una sola columna. */
+.row2 > * { min-width: 0; }
+.field input[type="date"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; text-align: left; }
+.field input[type="date"]::-webkit-date-and-time-value { text-align: left; min-height: 1.5em; }
+@media (max-width: 440px) { .row2.fechas { grid-template-columns: 1fr; } }
 .stepper { display: flex; }
 .stepper input { text-align: center; border-radius: 0; min-width: 0; font-weight: 700; }
 .stepper button { width: 48px; flex: none; background: var(--sun); border: 2px solid var(--ink); font-size: 1.4rem; font-weight: 800; cursor: pointer; }

@@ -1,7 +1,7 @@
 /* Service worker: guarda la aplicación en el teléfono para que abra sin internet.
    Estrategia: stale-while-revalidate (responde al instante desde el caché y lo actualiza en segundo plano).
    Al cambiar cualquier archivo de la app, subir el número de VERSION. */
-const VERSION = 'el-gallinero-v9';
+const VERSION = 'el-gallinero-v10';
 const ARCHIVOS = [
   './', 'index.html', 'css/app.css', 'js/app.js', 'manifest.webmanifest', 'apps-script/Code.gs',
   'fonts/alfa-slab-one.ttf',

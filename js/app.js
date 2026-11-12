@@ -515,7 +515,7 @@ VISTAS.comprar = () => {
       </div>
       <button type="button" class="btn btn-sm btn-ghost" id="e-usar" style="margin:-4px 0 14px">Usar el precio de la vez anterior</button>
       <div class="total-line"><span>Total a pagar</span><strong id="e-total">$0</strong></div>
-      <div class="row2">
+      <div class="row2 fechas">
         <label class="field"><span>Fecha de llegada</span><input id="e-fecha" type="date" value="${hoy()}"></label>
         <label class="field" id="e-b-granja"><span>Días en la granja</span><input id="e-dias" type="number" inputmode="numeric" min="0" max="30" value="2"><div class="hint">Cuántos días llevaba recogido</div></label>
         <label class="field" id="e-b-vence" hidden><span>Fecha de vencimiento</span><input id="e-vence" type="date"><div class="hint">La que dice el empaque</div></label>
