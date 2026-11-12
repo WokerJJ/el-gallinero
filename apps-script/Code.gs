@@ -143,6 +143,9 @@ function guardar_(d) {
   const prod = {}; d.products.forEach(function (p) { prod[p.id] = p; });
   const cli = {}; d.clientes.forEach(function (c) { cli[c.id] = c; });
   const provs = d.proveedores || [];
+  const neg = (d.config && d.config.negocio) || {};
+  const prefijo = neg.prefijo ? neg.prefijo + '-' : '';
+  const numeroComprobante = function (n) { return n ? prefijo + String(n).padStart(6, '0') : ''; };
   const prv = {}; provs.forEach(function (x) { prv[x.id] = x; });
   const debeCompra = function (e) { return e.proveedorId ? Math.max(0, e.total - (e.pagado == null ? e.total : e.pagado)) : 0; };
   const nombreProd = function (id) { return prod[id] ? prod[id].name : '(eliminado)'; };
@@ -151,10 +154,10 @@ function guardar_(d) {
   escribirHoja_('Inventario', ['Producto', 'Unidad', 'Existencias', 'Costo promedio', 'Precio de venta', 'Control de frescura'],
     d.products.map(function (p) { return [p.name, p.unit, p.stock, p.cost, p.price || '', p.control || '']; }));
 
-  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe'],
+  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe', 'Comprobante'],
     d.ventas.slice().sort(porFechaDesc).map(function (v) {
       const debe = v.tipoPago === 'credito' ? Math.max(0, v.total - (v.pagado || 0)) : 0;
-      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe];
+      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe, numeroComprobante(v.numero)];
     }));
 
   escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas', 'Proveedor', 'Pagado', 'Debe'],
@@ -168,12 +171,12 @@ function guardar_(d) {
       return [x.nombre, x.telefono || '', deuda, x.notas || ''];
     }));
 
-  escribirHoja_('Clientes', ['Cliente', 'Teléfono', 'Deuda', 'Notas'],
+  escribirHoja_('Clientes', ['Cliente', 'Teléfono', 'Deuda', 'Notas', 'Documento'],
     d.clientes.map(function (c) {
       const deuda = d.ventas.reduce(function (s, v) {
         return s + (v.clienteId === c.id && v.tipoPago === 'credito' ? Math.max(0, v.total - (v.pagado || 0)) : 0);
       }, 0);
-      return [c.nombre, c.telefono || '', deuda, c.notas || ''];
+      return [c.nombre, c.telefono || '', deuda, c.notas || '', c.documento || ''];
     }));
 
   escribirHoja_('Pérdidas', ['Fecha', 'Producto', 'Cantidad', 'Costo unitario', 'Motivo'],

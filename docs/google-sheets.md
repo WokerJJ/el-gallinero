@@ -65,14 +65,15 @@ El script solo reescribe el bloque de la tabla (las columnas de cada pestaña, d
 | Pestaña | Columnas |
 | --- | --- |
 | Inventario | Producto · Unidad · Existencias · Costo promedio · Precio de venta · Control de frescura |
-| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe |
+| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe · Comprobante |
 | Compras | Fecha · Producto · Cantidad · Panales · Costo unitario · Total · Vence · Días en granja · Notas · Proveedor · Pagado · Debe |
 | Proveedores | Proveedor · Teléfono · Deuda · Notas |
-| Clientes | Cliente · Teléfono · Deuda · Notas |
+| Clientes | Cliente · Teléfono · Deuda · Notas · Documento |
 | Pérdidas | Fecha · Producto · Cantidad · Costo unitario · Motivo |
 | Importar clientes (se llena a mano) | Nombre · Teléfono · Notas / dirección |
 
 - En **Compras**, *Debe* es lo que falta por pagar al proveedor (cuentas por pagar); las compras anteriores a esta función se toman como pagadas por completo.
+- En **Ventas**, *Comprobante* es el número consecutivo del comprobante de venta (vacío si todavía no se ha generado uno).
 - *Cantidad* siempre está en unidades; *Panales* solo se llena cuando la venta o la compra fue por panal.
 - Para referenciar toda una columna usa rangos abiertos (por ejemplo `Ventas!F2:F`), porque el número de filas cambia en cada envío.
 
