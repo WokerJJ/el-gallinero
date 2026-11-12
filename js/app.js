@@ -250,12 +250,13 @@ const ICONOS = {
   factura: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
   respaldo: '<path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v3h16v-3"/>',
   hoja: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 9v12"/>',
+  grafico: '<path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/>',
   ajustes: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.900 4.900l2.100 2.100M17 17l2.100 2.100M4.900 19.100L7 17M17 7l2.100-2.100"/>',
 };
 const icono = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS[n]}</svg>`;
 
 const NAV = [['inicio', 'Inicio'], ['vender', 'Vender'], ['comprar', 'Comprar'], ['clientes', 'Clientes'], ['mas', 'Más']];
-const SUBVISTAS = ['productos', 'proveedores', 'reportes', 'respaldo', 'sheets', 'ajustes'];
+const SUBVISTAS = ['productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
 
 function aviso(msg, error = false) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -382,7 +383,8 @@ VISTAS.inicio = () => {
       <div class="stats">
         <div class="stat"><div class="n">${money(totSem)}</div><div class="l">Vendido</div></div>
         <div class="stat"><div class="n ${ganSem < 0 ? 'neg' : 'pos'}">${money(ganSem)}</div><div class="l">Ganancia</div></div>
-      </div></section>`;
+      </div>
+      <button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="graficos">Ver gráficos</button></section>`;
 };
 
 /* =============== Vender =============== */
@@ -854,11 +856,108 @@ function pagarCompraCompleta(entradaId) {
   cerrarHoja(); resultadoPagoProveedor(e.proveedorId, monto, detalle); repintar();
 }
 
+/* =============== Gráficos de ganancias =============== */
+/* Gráficos dibujados con SVG propio (sin librerías, funcionan sin internet). La ganancia es la misma de todo el resto
+   de la app: lo vendido menos lo que costó lo vendido. */
+let grafTipo = 'semanas';
+const GRAF = { semanas: 'Últimas 8 semanas', meses: 'Últimos 6 meses', anio: 'Últimos 12 meses' };
+
+function periodosGrafico(tipo) {
+  const out = [], h = hoy();
+  if (tipo === 'semanas') {
+    const lunes = lunesDe(h);
+    for (let i = 7; i >= 0; i--) { const ini = sumarDias(lunes, -7 * i); out.push({ ini, fin: sumarDias(ini, 6), etiqueta: verFecha(ini).slice(0, 5), nombre: `Semana del ${verFecha(ini).slice(0, 5)}` }); }
+  } else {
+    const n = tipo === 'anio' ? 12 : 6, f = fechaDe(h);
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(f.getFullYear(), f.getMonth() - i, 1), y = d.getFullYear(), m = d.getMonth();
+      out.push({ ini: `${y}-${pad(m + 1)}-01`, fin: `${y}-${pad(m + 1)}-${pad(new Date(y, m + 1, 0).getDate())}`, etiqueta: MESES[m].slice(0, 3), nombre: `${MESES[m]} ${y}` });
+    }
+  }
+  return out;
+}
+function datosGrafico(tipo) {
+  return periodosGrafico(tipo).map(p => {
+    const en = f => f >= p.ini && f <= p.fin;
+    const ven = ventas.filter(v => en(v.fecha)), vendido = ven.reduce((s, v) => s + v.total, 0);
+    return { ...p, vendido, compras: entradas.filter(e => en(e.fecha)).reduce((s, e) => s + e.total, 0), ganancia: vendido - ven.reduce((s, v) => s + costoVenta(v), 0),
+      perdidas: ajustes.filter(a => en(a.fecha)).reduce((s, a) => s + a.cantidad * (a.costoUnitario || 0), 0) };
+  });
+}
+// $1,2 M · $350 mil · $800
+function corto(n) {
+  const a = Math.abs(n), sg = n < 0 ? '-' : '';
+  if (a >= 1e6) return `${sg}$${(a / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace('.', ',')} M`;
+  if (a >= 1e3) return `${sg}$${Math.round(a / 1e3)} mil`;
+  return `${sg}$${Math.round(a)}`;
+}
+const bonito = x => { const p = Math.pow(10, Math.floor(Math.log10(x))), f = x / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; };
+
+function graficoBarras({ titulo, etiquetas, series }) {
+  const W = 340, H = 200, ml = 48, mr = 8, mt = 12, mb = 24;
+  const todos = series.flatMap(s => s.valores), max = Math.max(0, ...todos), min = Math.min(0, ...todos);
+  const paso = bonito(((max - min) || 1) / 4);
+  const top = Math.ceil(max / paso) * paso || paso, bot = Math.floor(min / paso) * paso;
+  const y = v => mt + (top - v) / (top - bot) * (H - mt - mb);
+  const n = etiquetas.length, gw = (W - ml - mr) / n, bw = Math.min(28, gw * 0.78 / series.length);
+  let g = '';
+  const lineas = Math.round((top - bot) / paso);
+  for (let i = 0; i <= lineas; i++) { const v = bot + i * paso; g += `<line class="g-grid" x1="${ml}" x2="${W - mr}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="g-txt" x="${ml - 5}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${esc(corto(v))}</text>`; }
+  g += `<line class="g-zero" x1="${ml}" x2="${W - mr}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>`;
+  etiquetas.forEach((et, i) => {
+    const x0 = ml + i * gw + (gw - bw * series.length) / 2;
+    series.forEach((s, k) => {
+      const v = s.valores[i]; if (!v) return;
+      const alto = Math.max(Math.abs(y(v) - y(0)), 1.5), yy = v >= 0 ? y(0) - alto : y(0);
+      g += `<rect class="g-bar ${v < 0 && s.neg ? 'g-neg' : 'g-s' + k}" x="${(x0 + k * bw).toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${alto.toFixed(1)}" rx="2"><title>${esc(et)} · ${esc(s.nombre)}: ${esc(money(v))}</title></rect>`;
+    });
+    g += `<text class="g-txt" x="${(ml + i * gw + gw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(et)}</text>`;
+  });
+  const tabla = `<details class="datos"><summary>Ver los números</summary><table class="tbl"><thead><tr><th>${etiquetas.length ? 'Período' : ''}</th>${series.map(s => `<th class="num">${esc(s.nombre)}</th>`).join('')}</tr></thead><tbody>${etiquetas.map((et, i) => `<tr><td>${esc(et)}</td>${series.map(s => `<td class="num">${money(s.valores[i])}</td>`).join('')}</tr>`).join('')}</tbody></table></details>`;
+  const leyenda = series.length > 1 ? `<div class="leyenda">${series.map((s, k) => `<span><i class="g-s${k}"></i>${esc(s.nombre)}</span>`).join('')}</div>` : '';
+  return `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(titulo)}"><title>${esc(titulo)}</title>${g}</svg>${leyenda}${tabla}`;
+}
+
+VISTAS.graficos = () => {
+  const datos = datosGrafico(grafTipo), et = datos.map(d => d.etiqueta);
+  const ini = datos[0].ini, fin = datos[datos.length - 1].fin;
+  const tot = datos.reduce((a, d) => ({ vendido: a.vendido + d.vendido, ganancia: a.ganancia + d.ganancia, compras: a.compras + d.compras, perdidas: a.perdidas + d.perdidas }), { vendido: 0, ganancia: 0, compras: 0, perdidas: 0 });
+  const hay = datos.some(d => d.vendido || d.compras);
+  const mejor = datos.reduce((a, d) => (d.ganancia > a.ganancia ? d : a), datos[0]);
+  const margen = tot.vendido > 0 ? Math.round(tot.ganancia / tot.vendido * 100) : 0;
+  const porProd = new Map();
+  ventas.filter(v => v.fecha >= ini && v.fecha <= fin).forEach(v => porProd.set(v.productoId, (porProd.get(v.productoId) || 0) + v.total - costoVenta(v)));
+  const top = [...porProd.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6), maxTop = Math.max(1, ...top.map(t => t[1]));
+  const deben = deudaTotal(), debo = deudaProveedores();
+  return `
+    ${cabecera('Gráficos', 'mas')}
+    <div class="tabs tres no-print" role="tablist">${Object.entries(GRAF).map(([k, t]) => `<button role="tab" aria-selected="${k === grafTipo}" class="${k === grafTipo ? 'on' : ''}" data-act="graf-tipo" data-t="${k}">${t.replace('Últimas ', '').replace('Últimos ', '')}</button>`).join('')}</div>
+    <p class="view-sub" style="margin-top:0">${GRAF[grafTipo]}</p>
+    <section class="card"><div class="stats una">
+      <div class="stat teal"><div class="n ${tot.ganancia < 0 ? 'neg' : ''}">${money(tot.ganancia)}</div><div class="l">Ganancia del período</div></div>
+      <div class="stat sun"><div class="n">${money(tot.vendido)}</div><div class="l">Vendido</div></div></div>
+      <div class="stats" style="margin-top:10px">
+      <div class="stat"><div class="n">${margen}%</div><div class="l">Margen sobre lo vendido</div></div>
+      <div class="stat"><div class="n">${mejor.ganancia > 0 ? esc(mejor.etiqueta) : '—'}</div><div class="l">${mejor.ganancia > 0 ? `Mejor ${grafTipo === 'semanas' ? 'semana' : 'mes'}: ${money(mejor.ganancia)}` : 'Aún sin ganancias'}</div></div>
+    </div></section>
+    ${hay ? `
+    <section class="card"><h3>Ganancia por ${grafTipo === 'semanas' ? 'semana' : 'mes'}</h3>
+      ${graficoBarras({ titulo: `Ganancia por ${grafTipo === 'semanas' ? 'semana' : 'mes'}, ${GRAF[grafTipo].toLowerCase()}`, etiquetas: et, series: [{ nombre: 'Ganancia', valores: datos.map(d => d.ganancia), neg: true }] })}</section>
+    <section class="card"><h3>Ventas y compras</h3>
+      ${graficoBarras({ titulo: `Ventas y compras, ${GRAF[grafTipo].toLowerCase()}`, etiquetas: et, series: [{ nombre: 'Vendido', valores: datos.map(d => d.vendido) }, { nombre: 'Comprado', valores: datos.map(d => d.compras) }] })}</section>
+    <section class="card"><h3>Lo que más deja</h3>${top.length ? `<div class="list">${top.map(([id, g]) => { const p = prod(id); return `<div class="row"><div class="main"><div class="t">${esc(p ? p.name : 'Producto eliminado')}</div><div class="hbar"><span style="width:${Math.max(0, Math.round(g / maxTop * 100))}%"></span></div></div><div class="r"><strong class="${g < 0 ? 'neg' : ''}">${money(g)}</strong></div></div>`; }).join('')}</div>` : '<p class="empty">Sin ventas en este período.</p>'}</section>
+    <section class="card"><h3>Pendiente hoy</h3><div class="stats">
+      <div class="stat ${deben > 0 ? 'red' : ''}"><div class="n">${money(deben)}</div><div class="l">Me deben los clientes</div></div>
+      <div class="stat ${debo > 0 ? 'red' : ''}"><div class="n">${money(debo)}</div><div class="l">Debo a proveedores</div></div></div>
+      ${tot.perdidas > 0 ? `<p class="muted" style="margin-top:10px">Pérdidas del período (huevos rotos, vencidos): ${money(tot.perdidas)}.</p>` : ''}</section>`
+    : '<section class="card"><p class="empty">Todavía no hay ventas ni compras en este período. Cuando registres movimientos, aquí verás cómo van tus ganancias.</p></section>'}`;
+};
+
 /* =============== Más =============== */
 VISTAS.mas = () => `
   ${cabecera('Más')}
   <div class="card menu"><div class="list">
-    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
+    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
       .map(([v, i, t, s]) => `<button class="row" data-act="ir" data-v="${v}"><span class="ico">${icono(i)}</span><span class="main"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">&rsaquo;</span></button>`).join('')}
   </div></div>
   <div class="card"><h3>Instalar en el celular</h3>
@@ -1296,6 +1395,7 @@ const ACCIONES = {
   ir: el => navegar(el.dataset.v),
   cerrar: () => cerrarHoja(),
   paso: el => { const i = $('#' + el.dataset.t); i.value = Math.max(1, (parseInt(i.value, 10) || 0) + parseInt(el.dataset.d, 10)); i.dispatchEvent(new Event('input', { bubbles: true })); },
+  'graf-tipo': el => { grafTipo = el.dataset.t; repintar(); },
   'cliente-nuevo': el => formCliente(null, el.dataset.vuelta),
   'proveedor-nuevo': el => formProveedor(null, el.dataset.vuelta),
   'proveedor-ver': el => verProveedor(el.dataset.id),

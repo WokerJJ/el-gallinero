@@ -190,6 +190,7 @@ a.row, button.row { width: 100%; background: none; border-left: 0; border-right:
 
 /* ---------- Pestañas de periodo ---------- */
 .tabs { display: grid; grid-template-columns: repeat(4, 1fr); border: 2px solid var(--ink); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+.tabs.tres { grid-template-columns: repeat(3, 1fr); }
 .tabs button { background: #fff; border: 0; padding: 12px 4px; font-weight: 800; cursor: pointer; min-height: 46px; }
 .tabs button + button { border-left: 2px solid var(--ink); }
 .tabs button.on { background: var(--ink); color: var(--sun); }
@@ -266,3 +267,24 @@ a.row, button.row { width: 100%; background: none; border-left: 0; border-right:
   body { background: #fff; padding: 0; }
   .card { box-shadow: none; }
 }
+
+/* ---------- Gráficos ---------- */
+.grafico { width: 100%; height: auto; display: block; }
+.g-grid { stroke: var(--line); stroke-width: 1; }
+.g-zero { stroke: var(--ink); stroke-width: 1.5; }
+.g-txt { fill: var(--ink-soft); font: 600 10px var(--body); }
+.g-bar { stroke: var(--ink); stroke-width: 1.5; }
+.g-s0 { fill: var(--teal); }
+.g-s1 { fill: var(--sun); }
+.g-s2 { fill: var(--orange); }
+.g-neg { fill: var(--red); }
+.leyenda { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: .84rem; font-weight: 700; }
+.leyenda i { display: inline-block; width: 13px; height: 13px; border: 1.5px solid var(--ink); border-radius: 3px; margin-right: 6px; vertical-align: -2px; }
+.hbar { height: 12px; margin-top: 6px; border: 1.5px solid var(--ink); border-radius: 6px; background: #fff; overflow: hidden; }
+.hbar span { display: block; height: 100%; background: var(--teal); }
+details.datos { margin-top: 10px; }
+details.datos summary { cursor: pointer; font-weight: 700; font-size: .86rem; color: var(--teal); min-height: 44px; display: flex; align-items: center; }
+.stats.una { grid-template-columns: 1fr; }
+.leyenda i.g-s0 { background: var(--teal); }
+.leyenda i.g-s1 { background: var(--sun); }
+.leyenda i.g-s2 { background: var(--orange); }
