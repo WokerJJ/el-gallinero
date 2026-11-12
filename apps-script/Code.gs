@@ -142,6 +142,9 @@ function guardar_(d) {
 
   const prod = {}; d.products.forEach(function (p) { prod[p.id] = p; });
   const cli = {}; d.clientes.forEach(function (c) { cli[c.id] = c; });
+  const provs = d.proveedores || [];
+  const prv = {}; provs.forEach(function (x) { prv[x.id] = x; });
+  const debeCompra = function (e) { return e.proveedorId ? Math.max(0, e.total - (e.pagado == null ? e.total : e.pagado)) : 0; };
   const nombreProd = function (id) { return prod[id] ? prod[id].name : '(eliminado)'; };
   const porFechaDesc = function (a, b) { return String(b.fecha).localeCompare(String(a.fecha)); };
 
@@ -154,9 +157,15 @@ function guardar_(d) {
       return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe];
     }));
 
-  escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas'],
+  escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas', 'Proveedor', 'Pagado', 'Debe'],
     d.entradas.slice().sort(porFechaDesc).map(function (e) {
-      return [e.fecha, nombreProd(e.productoId), e.cantidad, e.panales || '', e.costoUnitario, e.total, e.vence || '', e.diasGranja || '', e.notas || ''];
+      return [e.fecha, nombreProd(e.productoId), e.cantidad, e.panales || '', e.costoUnitario, e.total, e.vence || '', e.diasGranja || '', e.notas || '', e.proveedorId && prv[e.proveedorId] ? prv[e.proveedorId].nombre : '', e.pagado == null ? e.total : e.pagado, debeCompra(e)];
+    }));
+
+  escribirHoja_('Proveedores', ['Proveedor', 'Teléfono', 'Deuda', 'Notas'],
+    provs.map(function (x) {
+      const deuda = d.entradas.reduce(function (s, e) { return s + (e.proveedorId === x.id ? debeCompra(e) : 0); }, 0);
+      return [x.nombre, x.telefono || '', deuda, x.notas || ''];
     }));
 
   escribirHoja_('Clientes', ['Cliente', 'Teléfono', 'Deuda', 'Notas'],
