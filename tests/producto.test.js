@@ -59,3 +59,13 @@ test('lista de precios · solo productos con existencias y precio, con el precio
   assert.match(t, /Huevo de Campo: \$18\.000 el panal de 30 \(\$600 c\/u\)/);
   assert.ok(!t.includes('Leche') && !t.includes('Sin precio'));
 });
+
+test('iPhone · la fila con fecha de llegada y días en granja pasa a una columna y los campos de fecha pueden encogerse', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const a = cargarApp({ seed: sembrar({ products: [prod()] }) });
+  assert.match(a.run('VISTAS.comprar()'), /<div class="row2 fechas">\s*<label class="field"><span>Fecha de llegada/);
+  const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'app.css'), 'utf8');
+  assert.match(css, /\.row2 > \* \{ min-width: 0; \}/, 'las celdas de la rejilla deben poder encogerse');
+  assert.match(css, /\.field input\[type="date"\][^}]*-webkit-appearance: none/, 'iOS: el campo de fecha no debe imponer su ancho');
+  assert.match(css, /@media \(max-width: 440px\) \{ \.row2\.fechas \{ grid-template-columns: 1fr; \} \}/);
+});
