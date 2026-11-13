@@ -10,7 +10,7 @@ Aplicación web instalable (PWA) para llevar el control de una distribuidora de 
 - **Clientes:** deuda por pedido, abonos (también a la deuda más vieja primero) y cobro por WhatsApp.
 - **Productos:** existencias, precio fijo, pérdidas y una *lista de precios* lista para enviar por WhatsApp.
 - **Facturas:** reportes por día, semana, mes o año; imprimir o exportar a Excel (CSV).
-- **Google Sheets:** copia automática de los datos a una hoja de cálculo propia (con plantilla lista en `plantilla/`), restauración en un teléfono nuevo e importación de clientes desde la hoja, sin duplicados. Ver [docs/google-sheets.md](docs/google-sheets.md).
+- **Google Sheets:** copia automática de los datos a una hoja de cálculo propia (con plantilla lista en `plantilla/`), restauración en un teléfono nuevo e importación de clientes desde la hoja, sin duplicados. Incluye un script de **paneles con gráficos** (`apps-script/Paneles.gs`) para el Sheet. Ver [docs/google-sheets.md](docs/google-sheets.md).
 - **Respaldo:** copia de seguridad y restauración en JSON, con validación del archivo antes de reemplazar los datos.
 
 ## Decisiones de diseño
