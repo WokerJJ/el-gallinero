@@ -78,6 +78,7 @@ test('EVA-001 · el formulario «Próximo número» rechaza lo que ya se emitió
   const a = cargarApp({ seed: sembrar({ ventas: [venta({ numero: 5 })], config: { negocio } }) });
   a.ir('ajustes');
   a.q('#ng-prefijo').value = 'CV'; a.q('#ng-consec').value = '5';
+  a.q('#ng-prefijo-c').value = 'CP'; a.q('#ng-consec-c').value = '1'; // la numeración de compras también se valida en este formulario
   a.q('#f-neg').listeners.submit[0]({ preventDefault() {} });
   const t = a.toasts().at(-1);
   assert.ok(t.error && /mínimo.*6/.test(t.texto), t.texto);
@@ -319,8 +320,9 @@ test('EVA-009 · pagos sucesivos con decimales no dejan residuos', () => {
 });
 
 /* ---------- D · diseño que toca lógica ---------- */
-test('DIS-001 · el service worker sube a v14', () => {
-  assert.match(fs.readFileSync(path.join(RAIZ, 'sw.js'), 'utf8'), /VERSION = 'el-gallinero-v14'/);
+test('DIS-001 · el service worker sube de versión cuando cambia la app (v14 o posterior)', () => {
+  const v = Number((fs.readFileSync(path.join(RAIZ, 'sw.js'), 'utf8').match(/VERSION = 'el-gallinero-v(\d+)'/) || [])[1]);
+  assert.ok(v >= 14, `versión del caché: ${v}`);
 });
 const graf = (a, n) => a.run(`graficoBarras({ titulo: 't', etiquetas: ${JSON.stringify(Array.from({ length: n }, (_, i) => 'e' + i))}, series: [{ nombre: 'Vendido', valores: ${JSON.stringify(Array.from({ length: n }, (_, i) => 100 + i))} }, { nombre: 'Comprado', valores: ${JSON.stringify(Array.from({ length: n }, (_, i) => 50 + i))} }] })`);
 test('DIS-002 · la segunda serie lleva trama diagonal y la leyenda usa el mismo patrón', () => {
