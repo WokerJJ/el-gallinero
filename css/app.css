@@ -168,17 +168,21 @@ a.row, button.row { width: 100%; background: none; border-left: 0; border-right:
 .stepper { display: flex; }
 .stepper input { text-align: center; border-radius: 0; min-width: 0; font-weight: 700; }
 .stepper button { width: 48px; flex: none; background: var(--sun); border: 2px solid var(--ink); font-size: 1.4rem; font-weight: 800; cursor: pointer; }
+.stepper button:focus-visible { outline-offset: -6px; }
 .stepper button:first-child { border-radius: 10px 0 0 10px; border-right: 0; }
 .stepper button:last-child { border-radius: 0 10px 10px 0; border-left: 0; }
 .chips { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .chip { border: 2px solid var(--ink); background: var(--card); border-radius: 999px; padding: 6px 14px; font-weight: 700; font-size: .85rem; cursor: pointer; min-height: 44px; }
 .chip:active { background: var(--sun); }
 .seg { display: grid; grid-template-columns: 1fr 1fr; border: 2px solid var(--ink); border-radius: 12px; overflow: hidden; margin-bottom: 14px; }
-.seg label { cursor: pointer; }
+.seg label { cursor: pointer; position: relative; }
 .seg input { position: absolute; opacity: 0; pointer-events: none; }
 .seg span { display: block; text-align: center; padding: 13px 8px; font-weight: 800; background: #fff; }
 .seg label + label span { border-left: 2px solid var(--ink); }
 .seg input:checked + span { background: var(--teal); color: #fff; }
+.seg input:checked + span::before { content: "\2713\00a0"; }
+.seg input:disabled + span { opacity: .55; cursor: not-allowed; }
+@media (max-width: 360px) { .seg span { padding: 13px 4px; font-size: .92rem; } }
 .seg input:focus-visible + span { outline: 3px solid var(--ink); outline-offset: -6px; }
 .total-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; background: var(--paper); border: 2px dashed var(--ink); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; flex-wrap: wrap; }
 .total-line strong { font-family: var(--display); font-weight: 400; font-size: 1.5rem; }
@@ -190,9 +194,12 @@ a.row, button.row { width: 100%; background: none; border-left: 0; border-right:
 
 /* ---------- Pestañas de periodo ---------- */
 .tabs { display: grid; grid-template-columns: repeat(4, 1fr); border: 2px solid var(--ink); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+.tabs.tres { grid-template-columns: repeat(3, 1fr); }
 .tabs button { background: #fff; border: 0; padding: 12px 4px; font-weight: 800; cursor: pointer; min-height: 46px; }
 .tabs button + button { border-left: 2px solid var(--ink); }
 .tabs button.on { background: var(--ink); color: var(--sun); }
+.tabs button:focus-visible { outline: 3px solid var(--teal); outline-offset: -6px; }
+.tabs button.on:focus-visible { outline-color: var(--sun); }
 .period-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .period-nav .lbl { flex: 1; text-align: center; font-weight: 800; }
 
@@ -266,3 +273,97 @@ a.row, button.row { width: 100%; background: none; border-left: 0; border-right:
   body { background: #fff; padding: 0; }
   .card { box-shadow: none; }
 }
+
+/* ---------- Gráficos ---------- */
+.grafico { width: 100%; height: auto; display: block; }
+.g-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 3; }
+.g-zero { stroke: var(--ink); stroke-width: 1.5; }
+.g-txt { fill: var(--ink-soft); font: 700 10.5px var(--body); }
+.g-bar { stroke: var(--ink); stroke-width: 1.25; }
+.g-s0 { fill: var(--teal); }
+.g-s1 { fill: var(--sun); }
+.g-s2 { fill: var(--orange); }
+.g-neg { fill: var(--red); }
+.leyenda { display: flex; gap: 6px 16px; flex-wrap: wrap; margin-top: 10px; font-size: .84rem; font-weight: 700; }
+.leyenda i { display: inline-block; width: 13px; height: 13px; border: 1.5px solid var(--ink); border-radius: 3px; margin-right: 6px; vertical-align: -2px; }
+.hbar { height: 14px; margin-top: 6px; border: 1.5px solid var(--ink); border-radius: 7px; background: #fff; overflow: hidden; }
+.hbar span { display: block; height: 100%; background: var(--teal); }
+details.datos { margin-top: 10px; border-top: 1.5px dashed var(--line); }
+details.datos summary { cursor: pointer; font-weight: 700; font-size: .88rem; color: var(--teal); min-height: 44px; display: flex; align-items: center; list-style: none; }
+details.datos summary::-webkit-details-marker { display: none; }
+details.datos summary::before { content: ""; width: 7px; height: 7px; margin: 0 12px 2px 4px; border-right: 2.5px solid currentColor; border-bottom: 2.5px solid currentColor; transform: rotate(-45deg); flex: none; }
+details.datos[open] summary::before { transform: rotate(45deg); margin-bottom: 4px; }
+details.datos summary:focus-visible { outline-offset: -3px; border-radius: 8px; }
+details.datos .tbl td.num { white-space: nowrap; }
+.stats.una { grid-template-columns: 1fr; }
+.leyenda i.g-s0 { background: var(--teal); }
+.leyenda i.g-s1 { background: var(--sun); }
+/* Segunda serie: trama diagonal (la misma del patrón #g-trama del gráfico), para distinguirla sin depender del color. */
+.g-bar.g-trama { fill: url(#g-trama); }
+.leyenda i.g-s1 { background: repeating-linear-gradient(45deg, var(--sun) 0 3px, var(--ink) 3px 5px); }
+.leyenda i.g-s2 { background: var(--orange); }
+
+/* ---------- Comprobante (se ve en pantalla y se imprime) ---------- */
+.link-btn.neutro { color: var(--teal); }
+.solo-impresion { display: none; }
+.doc { background: #fff; color: #000; border: 2px solid var(--ink); border-radius: 6px; box-shadow: 0 3px 0 var(--ink); overflow-x: auto; padding: 16px; font-size: .84rem; line-height: 1.45; margin-bottom: 12px; }
+.doc h2 { font-family: var(--display); font-weight: 400; font-size: 1.15rem; line-height: 1.15; margin-bottom: 4px; }
+.doc h3 { font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: #444; margin-bottom: 4px; }
+.doc-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-bottom: 10px; border-bottom: 2px solid #000; margin-bottom: 10px; }
+.doc-emisor { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.doc-num { flex: 1 1 160px; text-align: right; margin-left: auto; }
+@media (max-width: 480px) { .doc-num { text-align: left; padding-top: 8px; border-top: 1px dashed #999; } }
+.doc-tipo { font-weight: 800; letter-spacing: .04em; }
+.doc-n { font-size: 1.05rem; font-weight: 800; }
+.doc-cliente { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #999; }
+.doc-tabla { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+.doc-tabla th, .doc-tabla td { padding: 6px 4px; text-align: left; border-bottom: 1px solid #bbb; vertical-align: top; }
+.doc-tabla th { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 2px solid #000; }
+.doc-tabla .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.doc-tabla small { color: #444; }
+.doc-totales { margin-left: auto; width: min(100%, 280px); }
+.doc-totales div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.doc-totales .doc-saldo { border-top: 2px solid #000; margin-top: 4px; padding-top: 6px; font-size: 1.05rem; font-weight: 800; }
+.doc-totales strong { font-variant-numeric: tabular-nums; }
+.doc-firmas { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin: 34px 0 10px; }
+.doc-firmas div { border-top: 1px solid #000; padding-top: 4px; text-align: center; font-size: .75rem; color: #444; }
+.doc-nota { font-size: .72rem; color: #444; }
+/* Celulares angostos: la tabla de 4 columnas cabe sin desbordar (los encabezados bajan de línea). */
+@media (max-width: 440px) {
+  .doc { padding: 12px 10px; font-size: .82rem; }
+  .doc-tabla th, .doc-tabla td { padding: 6px 3px; }
+  .doc-tabla th { font-size: .62rem; letter-spacing: 0; line-height: 1.2; vertical-align: bottom; }
+  .doc-tabla th.num { white-space: normal; }
+  .doc-firmas { gap: 20px; margin-top: 28px; }
+}
+
+@media print {
+  html { scroll-padding: 0; }
+  body.imprime-doc { overflow: visible !important; height: auto !important; min-height: 0; padding: 0; background: #fff; color: #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body.imprime-doc #vista, body.imprime-doc .top, body.imprime-doc .stripes, body.imprime-doc .nav,
+  body.imprime-doc .sheet-back, body.imprime-doc .sheet-head, body.imprime-doc .toast, body.imprime-doc .update-bar { display: none !important; }
+  body.imprime-doc .sheet-wrap { position: static; display: block; }
+  body.imprime-doc .sheet { position: static; max-height: none; overflow: visible; max-width: none; width: auto; border: 0; border-radius: 0; box-shadow: none; background: #fff; padding: 0; animation: none; }
+  body.imprime-doc .no-print { display: none !important; }
+  body.imprime-doc .solo-impresion { display: block; }
+  body.imprime-doc .doc { border: 0; box-shadow: none; border-radius: 0; overflow: visible; padding: 0; font-size: 10.5pt; line-height: 1.4; margin: 0; }
+  body.imprime-doc .doc h2 { font-size: 16pt; }
+  body.imprime-doc .doc h3, body.imprime-doc .doc small, body.imprime-doc .doc-firmas div { color: #000; }
+  body.imprime-doc .doc-nota { font-size: 8.5pt; color: #000; margin-top: 8px; }
+  body.imprime-doc .doc-head { border-bottom-width: 1.5pt; }
+  body.imprime-doc .doc-num { text-align: right; padding-top: 0; border-top: 0; }
+  body.imprime-doc .doc-tabla { table-layout: auto; }
+  body.imprime-doc .doc-tabla th { font-size: 8.5pt; white-space: nowrap; letter-spacing: .03em; }
+  body.imprime-doc .doc-tabla th, body.imprime-doc .doc-tabla td { padding: 5px 6px; }
+  body.imprime-doc .doc-tabla td { border-bottom-color: #666; }
+  body.imprime-doc .doc-tabla thead { display: table-header-group; }
+  body.imprime-doc .doc-tabla tr, body.imprime-doc .doc-totales, body.imprime-doc .doc-firmas, body.imprime-doc .doc-cliente { break-inside: avoid; page-break-inside: avoid; }
+  body.imprime-doc .doc-firmas { margin-top: 40px; gap: 48px; }
+  @page { margin: 14mm; }
+}
+
+/* ---------- Comprobante de compra: estado del pago ---------- */
+.doc-estado { display: inline-block; margin: 0 0 10px; padding: 4px 10px; border: 1.5px solid #000; border-radius: 4px; font-weight: 800; font-size: .8rem; letter-spacing: .03em; text-transform: uppercase; }
+.doc-estado.pend { border-width: 3px; }
+.doc-sub { margin: 12px 0 4px; }
+@media print { body.imprime-doc .doc-estado { border-color: #000; } }

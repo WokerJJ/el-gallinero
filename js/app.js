@@ -25,6 +25,9 @@ const verFecha = s => { if (!s) return ''; if (typeof s !== 'string' || !FECHA_R
 const TOPE = 1e9;
 const leerNum = s => (String(s ?? '').trim() === '' ? NaN : Number(s));
 const enRango = (n, min = 0) => Number.isFinite(n) && n >= min && n <= TOPE;
+// Dinero a centavos: lo que se suma o resta (abonos, pagos, totales) se redondea para que 0,1 + 0,2 no deje residuos.
+const redondear = x => Math.round(x * 100) / 100;
+const aCero = d => (d < 0.005 ? 0 : d); // una deuda menor a medio centavo es ruido de redondeo, no una deuda
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 /* =============== Datos =============== */
@@ -41,30 +44,36 @@ const CONTROLES = ['granja', 'vencimiento', 'ninguno'];
 const rPanal = r => (r.panal == null ? (controlDe(r) === 'granja' ? 30 : 0) : Number.isInteger(r.panal) && r.panal >= 0 && r.panal <= 1000 ? r.panal : mal());
 const controlDe = r => (CONTROLES.includes(r.control) ? r.control : (r.isEgg ? 'granja' : (['leche', 'queso', 'arepa'].includes(r.id) ? 'vencimiento' : 'ninguno'))); // datos de la versión anterior: los lácteos y la arepa son empacados
 
-const SCHEMA = 3;
+// SCHEMA 4: config.anulados (rastro de comprobantes con ventas anuladas) y saldoFavor de proveedores.
+const SCHEMA = 4;
 const CLAVE_DB = 'eg_db', CLAVE_PREV = 'eg_prev';
 // Claves de la versión anterior (una por colección): solo se LEEN, para migrar al guardado único eg_db.
 const CLAVES = { products: 'eg_products', entradas: 'eg_entradas', ventas: 'eg_ventas', clientes: 'eg_clientes', config: 'eg_config', ajustes: 'eg_ajustes' };
-const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, schemaVersion: SCHEMA });
+const negocioBase = () => ({ nombre: 'El Gallinero', nit: '', direccion: '', telefono: '', ciudad: '', prefijo: 'CV', prefijoCompra: 'CP' });
+const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, anulados: [], consecutivoCompra: 1, anuladosCompra: [], schemaVersion: SCHEMA });
 
 let aviso_t; // se declara antes de cualquier uso: migrar() y guardar() pueden llamar a aviso() al arrancar
-let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], config = configBase();
+let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], config = configBase();
 let errorArranque = null, avisoArranque = '';
 let sync = null, syncEnCurso = false, syncTimer = null; // conexión con Google Sheets (ver más abajo)
 
 /* ---- Validación y saneamiento: nada entra a la memoria sin pasar por aquí ---- */
 const LIM = 1e15;
+const MAX_NUMERO = 999999999; // tope del número de comprobante (el mismo del formulario de Ajustes)
+const MAX_ANULADOS = 500;
 const mal = () => { throw new Error('registro inválido'); };
 const esNum = x => Number.isFinite(x) && Math.abs(x) <= LIM;
 const rNum = (x, def) => (x == null ? (def === undefined ? mal() : def) : esNum(x) ? x : mal());
 const rTxt = (x, def = '') => (x == null ? def : typeof x === 'string' ? x : mal());
 const rSid = x => (typeof x === 'string' && x ? x : mal());
 const rId = x => (Number.isSafeInteger(x) ? x : mal());
+const numeroOk = x => Number.isSafeInteger(x) && x >= 1 && x <= MAX_NUMERO;
 const fechaOk = s => typeof s === 'string' && FECHA_RE.test(s) && isoDe(fechaDe(s)) === s;
 const rFecha = x => (fechaOk(x) ? x : mal());
 const SANEAR = {
   products: r => ({ id: rSid(r.id), name: rTxt(r.name) || mal(), unit: rTxt(r.unit, 'unidades'), cost: rNum(r.cost, 0), price: rNum(r.price, 0), stock: rNum(r.stock, 0), lastCost: rNum(r.lastCost, 0), control: controlDe(r), panal: rPanal(r) }),
-  clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }),
+  clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas), documento: rTxt(r.documento).slice(0, 30) }),
+  proveedores: r => { const o = { id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }, sf = rNum(r.saldoFavor, 0); if (sf > 0) o.saldoFavor = redondear(sf); return o; }, // saldoFavor: lo pagado en compras anuladas
   entradas: r => {
     const cantidad = rNum(r.cantidad), costoUnitario = rNum(r.costoUnitario, 0);
     const o = { id: rId(r.id), productoId: rSid(r.productoId), cantidad, costoUnitario, total: rNum(r.total, cantidad * costoUnitario), fecha: rFecha(r.fecha), diasGranja: rNum(r.diasGranja, 0), notas: rTxt(r.notas) };
@@ -72,6 +81,12 @@ const SANEAR = {
     if (r.panales != null) { o.panales = rNum(r.panales); o.costoPanal = rNum(r.costoPanal, 0); }
     if (r.costoPrevio != null) o.costoPrevio = rNum(r.costoPrevio);
     if (r.lastCostPrevio != null) o.lastCostPrevio = rNum(r.lastCostPrevio);
+    if (r.proveedorId != null && r.proveedorId !== '') o.proveedorId = rSid(r.proveedorId);
+    // Criterio: lo pagado nunca es negativo ni supera el total (un respaldo dañado no puede inventar saldo a favor ni deuda
+    // negativa), y un abono de monto cero o negativo no es un pago: se descarta. Un monto que no es número invalida el registro.
+    o.pagado = Math.max(0, Math.min(o.total, rNum(r.pagado, o.total)));
+    o.abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })).filter(a => a.monto > 0) : mal();
+    if (numeroOk(r.numero)) o.numero = r.numero; // número del comprobante de compra (fuera de rango: se descarta, la compra se conserva)
     return o;
   },
   ajustes: r => ({ id: rId(r.id), productoId: rSid(r.productoId), cantidad: rNum(r.cantidad), costoUnitario: rNum(r.costoUnitario, 0), fecha: rFecha(r.fecha), motivo: rTxt(r.motivo) }),
@@ -79,20 +94,35 @@ const SANEAR = {
     const cantidad = rNum(r.cantidad), precio = rNum(r.precio), costoUnitario = rNum(r.costoUnitario, 0), total = rNum(r.total, cantidad * precio);
     const tipoPago = r.tipoPago == null ? 'contado' : (r.tipoPago === 'contado' || r.tipoPago === 'credito' ? r.tipoPago : mal());
     const abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })) : mal();
-    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}) };
+    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(numeroOk(r.numero) ? { numero: r.numero } : {}) };
   },
 };
 function sanearConfig(c) {
   c = c && typeof c === 'object' && !Array.isArray(c) ? c : {};
   const n = (x, def, min, max) => { const v = x == null || x === '' ? NaN : Number(x); return Number.isFinite(v) && v >= min && v <= max ? v : def; };
   const base = configBase();
-  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, schemaVersion: SCHEMA };
+  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: numeroOk(c.consecutivo) ? c.consecutivo : 1, anulados: sanearAnulados(c.anulados), consecutivoCompra: numeroOk(c.consecutivoCompra) ? c.consecutivoCompra : 1, anuladosCompra: sanearAnulados(c.anuladosCompra), schemaVersion: SCHEMA };
+}
+// Rastro de las ventas anuladas que ya tenían número de comprobante: {numero, fecha, cliente, total}. Se conservan las últimas 500.
+function sanearAnulados(l) {
+  if (!Array.isArray(l)) return [];
+  const ok = [];
+  for (const a of l) {
+    if (a && typeof a === 'object' && numeroOk(a.numero) && fechaOk(a.fecha) && esNum(a.total)) ok.push({ numero: a.numero, fecha: a.fecha, cliente: typeof a.cliente === 'string' ? a.cliente.slice(0, 100) : '', total: a.total });
+  }
+  return ok.slice(-MAX_ANULADOS);
+}
+function sanearNegocio(n) {
+  n = n && typeof n === 'object' && !Array.isArray(n) ? n : {};
+  const t = (x, def, max = 100) => (typeof x === 'string' ? x.trim().slice(0, max) : def), base = negocioBase();
+  const prefijo = typeof n.prefijo === 'string' && /^[A-Za-z0-9]{0,6}$/.test(n.prefijo.trim()) ? n.prefijo.trim().toUpperCase() : base.prefijo;
+  return { nombre: t(n.nombre, base.nombre), nit: t(n.nit, '', 30), direccion: t(n.direccion, '', 150), telefono: t(n.telefono, '', 30), ciudad: t(n.ciudad, '', 60), prefijo, prefijoCompra: typeof n.prefijoCompra === 'string' && /^[A-Za-z0-9]{0,6}$/.test(n.prefijoCompra.trim()) ? n.prefijoCompra.trim().toUpperCase() : base.prefijoCompra };
 }
 // Devuelve datos limpios y la lista de registros inválidos (que NO se incluyen).
 function limpiar(crudo) {
   const d = crudo && typeof crudo === 'object' ? crudo : {};
   const datos = {}, errores = [];
-  for (const k of ['products', 'entradas', 'ventas', 'clientes', 'ajustes']) {
+  for (const k of ['products', 'entradas', 'ventas', 'clientes', 'ajustes', 'proveedores']) {
     datos[k] = [];
     if (d[k] == null) continue;
     if (!Array.isArray(d[k])) { errores.push(`${k}: no es una lista`); continue; }
@@ -101,7 +131,17 @@ function limpiar(crudo) {
     });
   }
   datos.config = sanearConfig(d.config);
-  return { datos, errores };
+  // El consecutivo nunca puede quedar por debajo del mayor número ya emitido (ventas o anuladas): evita repetir números.
+  const mayor = Math.max(0, ...datos.ventas.map(v => v.numero || 0), ...datos.config.anulados.map(a => a.numero));
+  datos.config.consecutivo = Math.min(MAX_NUMERO, Math.max(datos.config.consecutivo, mayor + 1));
+  // Lo mismo para los comprobantes de compra (su numeración es aparte).
+  const mayorC = Math.max(0, ...datos.entradas.map(e => e.numero || 0), ...datos.config.anuladosCompra.map(a => a.numero));
+  datos.config.consecutivoCompra = Math.min(MAX_NUMERO, Math.max(datos.config.consecutivoCompra, mayorC + 1));
+  // Una compra cuyo proveedor no existe (respaldo dañado o editado) dejaría una deuda invisible: se recrea el proveedor.
+  const conocidos = new Set(datos.proveedores.map(p => p.id));
+  const faltan = [...new Set(datos.entradas.map(e => e.proveedorId).filter(id => id && !conocidos.has(id)))];
+  faltan.forEach(id => datos.proveedores.push({ id, nombre: 'Proveedor sin nombre', telefono: '', notas: 'Recuperado de un respaldo' }));
+  return { datos, errores, recuperados: faltan.length };
 }
 // Migración: la versión anterior guardaba las pérdidas como entradas con cantidad negativa.
 function migrar(d) {
@@ -111,8 +151,8 @@ function migrar(d) {
   d.entradas = d.entradas.filter(e => e.cantidad > 0);
   return true;
 }
-const estado = () => ({ products, entradas, ventas, clientes, ajustes, config });
-const poner = d => { ({ products, entradas, ventas, clientes, ajustes, config } = d); if (!products.length) products = clonar(PRODUCTOS_BASE); };
+const estado = () => ({ products, entradas, ventas, clientes, ajustes, proveedores, config });
+const poner = d => { ({ products, entradas, ventas, clientes, ajustes, proveedores, config } = d); if (!products.length) products = clonar(PRODUCTOS_BASE); };
 
 // Un solo setItem: o se guarda todo o no se guarda nada.
 function guardar() {
@@ -146,14 +186,17 @@ function cargarEstado() {
     crudo = {};
     for (const k of Object.keys(CLAVES)) { const raw = localStorage.getItem(CLAVES[k]); crudo[k] = raw === null ? null : JSON.parse(raw); }
   }
-  const { datos, errores } = limpiar(crudo);
-  if (errores.length) {
+  const { datos, errores, recuperados } = limpiar(crudo);
+  const nueva = !!(crudo.config && typeof crudo.config === 'object' && crudo.config.schemaVersion > SCHEMA);
+  if (errores.length || nueva) {
     try { localStorage.setItem(CLAVE_PREV, rawDb ?? JSON.stringify(crudo)); } catch { /* sin espacio: se avisa igual */ }
-    avisoArranque = `Se descartaron ${errores.length} registro(s) dañado(s). La copia original quedó en eg_prev.`;
+    avisoArranque = errores.length ? `Se descartaron ${errores.length} registro(s) dañado(s). La copia original quedó en eg_prev.` : '';
   }
+  if (nueva) avisoArranque += `${avisoArranque ? ' ' : ''}Estos datos se guardaron con una versión más nueva de la app: actualiza la app para no perder información (hay una copia en eg_prev).`;
+  if (recuperados) avisoArranque += `${avisoArranque ? ' ' : ''}Se recuperaron ${recuperados} proveedor(es) sin nombre: ponles nombre en Proveedores.`;
   const migrado = migrar(datos);
   poner(datos);
-  return rawDb === null || migrado;
+  return rawDb === null || migrado || recuperados > 0;
 }
 
 function pantallaRecuperacion(err) {
@@ -177,7 +220,7 @@ const cliente = id => clientes.find(c => c.id === id);
 const nuevoId = () => Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
 /* =============== Cálculos del negocio =============== */
-const debeVenta = v => (v.tipoPago === 'credito' ? Math.max(0, v.total - (v.pagado || 0)) : 0);
+const debeVenta = v => (v.tipoPago === 'credito' ? aCero(redondear(v.total - (v.pagado || 0))) : 0);
 const deudaCliente = id => ventas.filter(v => v.clienteId === id).reduce((s, v) => s + debeVenta(v), 0);
 const deudaTotal = () => ventas.reduce((s, v) => s + (v.clienteId ? debeVenta(v) : 0), 0);
 const costoVenta = v => (v.costoUnitario || 0) * v.cantidad;
@@ -246,12 +289,13 @@ const ICONOS = {
   factura: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
   respaldo: '<path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v3h16v-3"/>',
   hoja: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 9v12"/>',
+  grafico: '<path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/>',
   ajustes: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.900 4.900l2.100 2.100M17 17l2.100 2.100M4.900 19.100L7 17M17 7l2.100-2.100"/>',
 };
 const icono = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS[n]}</svg>`;
 
 const NAV = [['inicio', 'Inicio'], ['vender', 'Vender'], ['comprar', 'Comprar'], ['clientes', 'Clientes'], ['mas', 'Más']];
-const SUBVISTAS = ['productos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
+const SUBVISTAS = ['productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
 
 function aviso(msg, error = false) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -264,8 +308,12 @@ function aviso(msg, error = false) {
   aviso_t = setTimeout(() => t.remove(), error ? 4000 : 2200);
 }
 
+const FOCABLES = 'a[href],button,input:not([type=hidden]),select,textarea,[tabindex]:not([tabindex="-1"])';
+let focoPrevio = null; // lo que tenía el foco al abrir el primer diálogo: ahí vuelve al cerrar
 function hoja(titulo, cuerpo, montar) {
-  cerrarHoja();
+  const origen = $('.sheet-wrap') ? focoPrevio : document.activeElement; // un diálogo que reemplaza a otro conserva el origen
+  cerrarHoja(false);
+  focoPrevio = origen || null;
   const w = document.createElement('div');
   w.className = 'sheet-wrap';
   w.innerHTML = `<div class="sheet-back" data-act="cerrar"></div>
@@ -276,13 +324,27 @@ function hoja(titulo, cuerpo, montar) {
   document.body.classList.add('no-scroll');
   const cuerpoEl = $('.sheet-body', w);
   if (montar) montar(cuerpoEl);
+  // El foco entra siempre al diálogo (lectores de pantalla y teclado). Con ratón se va al primer campo; en el teléfono se queda
+  // en el contenedor para no abrir el teclado solo.
+  const dialogo = $('.sheet', w);
+  dialogo.setAttribute('tabindex', '-1');
   const primero = $('input:not([type=hidden]),select,textarea', cuerpoEl);
-  if (primero && matchMedia('(pointer:fine)').matches) primero.focus();
+  if (primero && matchMedia('(pointer:fine)').matches) primero.focus(); else dialogo.focus();
+  // Tab y Mayús+Tab dan la vuelta dentro del diálogo en vez de salir a la página de atrás.
+  w.addEventListener('keydown', e => {
+    if (e.key !== 'Tab') return;
+    const f = [...w.querySelectorAll(FOCABLES)].filter(x => !x.disabled && !x.closest('[hidden]'));
+    if (!f.length) { e.preventDefault(); dialogo.focus(); return; }
+    const act = document.activeElement, ini = f[0], fin = f[f.length - 1];
+    if (e.shiftKey && (act === ini || act === dialogo)) { e.preventDefault(); fin.focus(); }
+    else if (!e.shiftKey && act === fin) { e.preventDefault(); ini.focus(); }
+  });
 }
 let confirmacionAbierta = null; // resolver de la confirmación en pantalla: si se cierra de otra forma, resuelve false
-function cerrarHoja() {
+function cerrarHoja(devolverFoco = true) {
   const w = $('.sheet-wrap'); if (w) w.remove(); document.body.classList.remove('no-scroll');
   if (confirmacionAbierta) { const r = confirmacionAbierta; confirmacionAbierta = null; r(false); }
+  if (w && devolverFoco && focoPrevio) { const f = focoPrevio; focoPrevio = null; if (f.isConnected !== false && f.focus) f.focus(); }
 }
 /* Evita guardar dos veces lo mismo por un doble toque: tras un envío, el formulario ignora otro durante un instante. */
 document.addEventListener('submit', e => {
@@ -334,6 +396,7 @@ VISTAS.inicio = () => {
   const totSem = vs.reduce((s, v) => s + v.total, 0);
   const ganSem = totSem - vs.reduce((s, v) => s + costoVenta(v), 0);
   const deuda = deudaTotal();
+  const deudaProv = deudaProveedores();
   const al = alertasVencimiento();
   const fechaLarga = new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' }).replace(/ De /g, ' de ');
 
@@ -368,6 +431,7 @@ VISTAS.inicio = () => {
         <div class="stat ${deuda > 0 ? 'red' : ''}"><div class="n">${money(deuda)}</div><div class="l">Me deben</div></div>
       </div>
       ${deuda > 0 ? '<button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="clientes">Ver quién me debe</button>' : ''}
+      ${deudaProv > 0 ? `<div class="stat red" style="margin-top:12px"><div class="n">${money(deudaProv)}</div><div class="l">Debo a proveedores</div></div><button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="proveedores">Ver cuentas por pagar</button>` : ''}
     </section>
     <section class="card"><h3>Frescura</h3>${alertasHtml}</section>
     <section class="card"><h3>En bodega</h3><div class="list">${stockHtml}</div>
@@ -376,7 +440,8 @@ VISTAS.inicio = () => {
       <div class="stats">
         <div class="stat"><div class="n">${money(totSem)}</div><div class="l">Vendido</div></div>
         <div class="stat"><div class="n ${ganSem < 0 ? 'neg' : 'pos'}">${money(ganSem)}</div><div class="l">Ganancia</div></div>
-      </div></section>`;
+      </div>
+      <button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="graficos">Ver gráficos</button></section>`;
 };
 
 /* =============== Vender =============== */
@@ -427,7 +492,7 @@ const filaVenta = v => {
   const p = prod(v.productoId), c = cliente(v.clienteId);
   return `<div class="row"><div class="main"><div class="t">${cantTxt(v)} × ${esc(p ? p.name : 'Producto eliminado')}</div>
     <div class="s">${precioTxt(v)} · ${v.tipoPago === 'credito' ? 'Crédito' : 'Contado'}${c ? ' · ' + esc(c.nombre) : ''}${v.fecha !== hoy() ? ' · ' + verFecha(v.fecha) : ''}</div></div>
-    <div class="r"><strong>${money(v.total)}</strong><br><button class="link-btn" data-act="venta-anular" data-id="${esc(v.id)}">Anular</button></div></div>`;
+    <div class="r"><strong>${money(v.total)}</strong><br><button class="link-btn neutro" data-act="comprobante" data-id="${esc(v.id)}">Comprobante</button> <button class="link-btn" data-act="venta-anular" data-id="${esc(v.id)}">Anular</button></div></div>`;
 };
 
 MONTAR.vender = () => {
@@ -485,12 +550,12 @@ MONTAR.vender = () => {
     const abonoIn = tipoPago === 'credito' && abonoTxt !== '' ? leerNum(abonoTxt) : 0;
     if (!enRango(abonoIn)) return aviso('El abono no es válido', true);
     if (p.stock < cantidad && !(await confirmar({ titulo: 'Stock insuficiente', texto: `Solo hay ${num(p.stock)} ${p.unit} de ${p.name}. ¿Registrar la venta igual?`, ok: 'Sí, registrar' }))) return;
-    const total = n * precioIn, precio = total / cantidad; // el total es exacto aunque el precio por unidad no lo sea
+    const total = redondear(n * precioIn), precio = total / cantidad; // el total es exacto (a centavos) aunque el precio por unidad no lo sea
     aplicar(() => {
       const descontado = Math.min(p.stock, cantidad);
       p.stock -= descontado;
       let pagado = total; const abonos = [];
-      if (tipoPago === 'credito') { const ab = Math.min(abonoIn, total); pagado = ab; if (ab > 0) abonos.push({ fecha, monto: ab }); }
+      if (tipoPago === 'credito') { const ab = Math.min(redondear(abonoIn), total); pagado = ab; if (ab > 0) abonos.push({ fecha, monto: ab }); }
       ventas.push({ id: nuevoId(), productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos, ...(enPanal ? { panales: n, precioPanal: precioIn } : {}) });
     }, `Venta guardada · ${money(total)}`);
     memoVenta = { productoId: p.id, clienteId: clienteId || '', pago: tipoPago };
@@ -499,6 +564,8 @@ MONTAR.vender = () => {
 };
 
 /* =============== Comprar (entradas) =============== */
+let memoCompra = { proveedorId: '', pago: 'todo' };
+const opcionesProveedores = sel => '<option value="">Sin proveedor</option>' + proveedores.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map(c => `<option value="${esc(c.id)}" ${c.id === sel ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
 VISTAS.comprar = () => {
   const rec = entradas.slice().sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id).slice(0, 12);
   return `
@@ -514,17 +581,25 @@ VISTAS.comprar = () => {
         <label class="field"><span id="e-costo-lbl">Costo por unidad</span><input id="e-costo" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
       </div>
       <button type="button" class="btn btn-sm btn-ghost" id="e-usar" style="margin:-4px 0 14px">Usar el precio de la vez anterior</button>
-      <div class="total-line"><span>Total a pagar</span><strong id="e-total">$0</strong></div>
+      <div class="total-line"><span>Total de la compra</span><strong id="e-total">$0</strong></div>
+      <div class="seg" role="radiogroup" aria-label="Pago al proveedor">
+        <label><input type="radio" name="epago" value="todo" ${memoCompra.pago !== 'parcial' ? 'checked' : ''}><span>Pagué todo</span></label>
+        <label><input type="radio" name="epago" value="parcial" ${memoCompra.pago === 'parcial' ? 'checked' : ''}><span>Queda debiendo</span></label>
+      </div>
+      <label class="field" id="e-pagado-box" hidden><span>Pagué hoy (el resto queda por pagar)</span><input id="e-pagado" type="number" inputmode="decimal" min="0" step="any" placeholder="0"><div class="hint" id="e-resta"></div></label>
       <div class="row2 fechas">
         <label class="field"><span>Fecha de llegada</span><input id="e-fecha" type="date" value="${hoy()}"></label>
         <label class="field" id="e-b-granja"><span>Días en la granja</span><input id="e-dias" type="number" inputmode="numeric" min="0" max="30" value="2"><div class="hint">Cuántos días llevaba recogido</div></label>
         <label class="field" id="e-b-vence" hidden><span>Fecha de vencimiento</span><input id="e-vence" type="date"><div class="hint">La que dice el empaque</div></label>
       </div>
-      <label class="field"><span>Finca / proveedor (opcional)</span><input id="e-notas" type="text" placeholder="Ej: Finca La Esperanza"></label>
+      <div class="field"><span id="e-prov-lbl">Finca / proveedor (opcional)</span>
+        <div class="inline-add"><select id="e-prov" aria-labelledby="e-prov-lbl">${opcionesProveedores(memoCompra.proveedorId)}</select><button type="button" class="btn btn-teal" data-act="proveedor-nuevo" data-vuelta="compra" aria-label="Nuevo proveedor">+</button></div>
+      </div>
+      <label class="field"><span>Notas (opcional)</span><input id="e-notas" type="text" placeholder="Ej: lote de la mañana"></label>
       <button class="btn btn-teal btn-big" type="submit">Guardar entrada</button>
     </form>
     <section class="card"><h3>Últimas entradas</h3>
-      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${e.panales != null ? money(e.costoPanal) + ' c/panal' : money(e.costoUnitario) + ' c/u'}${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
+      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${e.panales != null ? money(e.costoPanal) + ' c/panal' : money(e.costoUnitario) + ' c/u'}${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.proveedorId && proveedor(e.proveedorId) ? ' · ' + esc(proveedor(e.proveedorId).nombre) : ''}${e.proveedorId && debeEntrada(e) > 0 ? ' · <strong class="neg">debes ' + money(debeEntrada(e)) + '</strong>' : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn neutro" data-act="comprobante-compra" data-id="${esc(e.id)}">Comprobante</button> <button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
 };
 MONTAR.comprar = () => {
   const f = $('#f-entrada');
@@ -548,12 +623,25 @@ MONTAR.comprar = () => {
     $('#e-b-granja').hidden = !p || p.control !== 'granja';
     $('#e-b-vence').hidden = !p || p.control !== 'vencimiento';
   };
-  const calc = () => { $('#e-total').textContent = money((parseFloat($('#e-cant').value) || 0) * (parseFloat($('#e-costo').value) || 0)); };
+  const pagoModo = () => (f.querySelector('input[name=epago]:checked') || {}).value;
+  const calc = () => {
+    const total = (parseFloat($('#e-cant').value) || 0) * (parseFloat($('#e-costo').value) || 0);
+    $('#e-total').textContent = money(total);
+    const pagado = parseFloat($('#e-pagado').value) || 0;
+    $('#e-resta').textContent = pagoModo() === 'parcial' && total > 0 && pagado >= 0 && pagado < total ? `Quedará por pagar ${money(total - pagado)}` : '';
+  };
+  const alternarPago = () => {
+    const parcial = pagoModo() === 'parcial';
+    $('#e-pagado-box').hidden = !parcial;
+    $('#e-prov-lbl').textContent = parcial ? 'Finca / proveedor (obligatorio si queda debiendo)' : 'Finca / proveedor (opcional)';
+    calc();
+  };
+  f.querySelectorAll('input[name=epago]').forEach(r => r.addEventListener('change', alternarPago));
   $('#e-prod').addEventListener('change', () => { const r = f.querySelector('input[name=euni][value=panal]'); if (r) r.checked = true; pista(); });
   f.querySelectorAll('input[name=euni]').forEach(r => r.addEventListener('change', pista));
   f.addEventListener('input', calc);
   $('#e-usar').addEventListener('click', () => { const p = prod($('#e-prod').value); if (p) { $('#e-costo').value = Math.round((p.lastCost || p.cost) * factor() * 100) / 100; calc(); aviso('Precio anterior aplicado'); } });
-  pista();
+  pista(); alternarPago();
   f.addEventListener('submit', e => {
     e.preventDefault();
     const p = prod($('#e-prod').value);
@@ -565,18 +653,30 @@ MONTAR.comprar = () => {
     const vence = p.control === 'vencimiento' ? $('#e-vence').value : '';
     if (!(Number.isInteger(n) && enRango(n, 1) && enRango(cantidad, 1))) return aviso(enPanal ? 'Los panales deben ser un número entero mayor que cero' : 'La cantidad debe ser un número entero mayor que cero', true);
     if (!enRango(costoIn)) return aviso(`Escribe el costo por ${enPanal ? 'panal' : 'unidad'} (un número razonable)`, true);
-    const total = n * costoIn, costo = total / cantidad; // el total es exacto aunque el costo por unidad no lo sea
+    const total = redondear(n * costoIn), costo = Math.round(total / cantidad * 10000) / 10000; // el total es exacto; el costo por unidad lleva 4 decimales (30 huevos de un panal de 14.333,33 no caben en 2)
     if (!fechaOk(fecha)) return aviso('Falta la fecha', true);
     if (p.control === 'vencimiento' && !fechaOk(vence)) return aviso('Escribe la fecha de vencimiento', true);
     if (vence && vence < fecha) return aviso('La fecha de vencimiento es anterior a la llegada', true);
     const notas = $('#e-notas').value.trim();
+    const proveedorId = $('#e-prov').value || null, parcial = pagoModo() === 'parcial', nEntradas = entradas.length;
+    let pagado = total; const abonos = [];
+    if (parcial) {
+      if (!proveedorId) return aviso('Si queda debiendo, elige a quién (o crea el proveedor con +)', true);
+      const txt = String($('#e-pagado').value ?? '').trim(), hoyPaga = txt === '' ? 0 : redondear(leerNum(txt));
+      if (!enRango(hoyPaga)) return aviso('El valor pagado no es válido', true);
+      if (hoyPaga >= total) return aviso('Pagaste todo: elige «Pagué todo»', true);
+      pagado = hoyPaga; if (hoyPaga > 0) abonos.push({ fecha, monto: hoyPaga });
+    }
     aplicar(() => {
       const stockPrevio = p.stock, costoPrevio = p.cost || 0, lastCostPrevio = p.lastCost || 0;
       p.stock = stockPrevio + cantidad;
-      p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 100) / 100 : costo;
+      p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 10000) / 10000 : costo;
       p.lastCost = costo;
-      entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), notas, costoPrevio, lastCostPrevio });
-    }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}`);
+      entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, costoPrevio, lastCostPrevio });
+    }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${parcial ? ' · debes ' + money(total - pagado) : ''}`);
+    memoCompra = { proveedorId: proveedorId || '', pago: parcial ? 'parcial' : 'todo' };
+    // Solo si la compra se guardó (si falló, el estado se revirtió y no hay comprobante que mostrar).
+    if (entradas.length > nEntradas) abrirComprobanteCompra(entradas[entradas.length - 1].id); // dice si se pagó todo y cuánto queda pendiente
     repintar();
   });
 };
@@ -609,6 +709,7 @@ function formCliente(c, vuelta) {
     <form id="f-cli" novalidate>
       <label class="field"><span>Nombre</span><input id="cl-nombre" type="text" value="${esc(c ? c.nombre : '')}" autocomplete="off"></label>
       <label class="field"><span>Celular (para WhatsApp)</span><input id="cl-tel" type="tel" inputmode="tel" placeholder="300 123 4567" value="${esc(c ? c.telefono : '')}"></label>
+      <label class="field"><span>Cédula o NIT (para el comprobante)</span><input id="cl-doc" type="text" inputmode="numeric" value="${esc(c ? c.documento || '' : '')}" autocomplete="off"></label>
       <label class="field"><span>Dirección / notas</span><textarea id="cl-notas" rows="2">${esc(c ? c.notas : '')}</textarea></label>
       <button class="btn btn-teal" type="submit">Guardar</button>
       ${c && !ventas.some(v => v.clienteId === c.id) ? '<div class="btn-row"><button class="btn btn-ghost" type="button" id="cl-del">Eliminar cliente</button></div>' : ''}
@@ -617,7 +718,7 @@ function formCliente(c, vuelta) {
       e.preventDefault();
       const nombre = $('#cl-nombre', b).value.trim();
       if (!nombre) return aviso('Escribe el nombre', true);
-      const dato = { nombre, telefono: $('#cl-tel', b).value.trim(), notas: $('#cl-notas', b).value.trim() };
+      const dato = { nombre, telefono: $('#cl-tel', b).value.trim(), notas: $('#cl-notas', b).value.trim(), documento: $('#cl-doc', b).value.trim().slice(0, 30) };
       const id = c ? c.id : 'c' + nuevoId();
       aplicar(() => { if (c) Object.assign(c, dato); else clientes.push({ id, ...dato }); }, 'Cliente guardado');
       cerrarHoja();
@@ -649,6 +750,7 @@ function verCliente(id) {
       return `<div class="pedido"><div class="top-line"><strong>${verFecha(v.fecha)}</strong><span class="badge ${est[0]}">${est[1]}</span></div>
         <div>${cantTxt(v)} × ${esc(p ? p.name : 'Producto eliminado')} a ${precioTxt(v).replace(' c/', ' por ')}</div>
         <div>Total ${money(v.total)}${v.tipoPago === 'credito' ? ` · abonado ${money(ab)} · <strong>debe ${money(resta)}</strong>` : ' · contado'}</div>
+        <div><button class="link-btn neutro" data-act="comprobante" data-id="${esc(v.id)}">Ver comprobante${v.numero ? ' N° ' + esc(numeroTxt(v.numero)) : ''}</button></div>
         ${resta > 0 ? `<div class="btn-row"><button class="btn btn-sm btn-teal" data-act="abonar" data-venta="${esc(v.id)}">Abonar</button><button class="btn btn-sm btn-sun" data-act="pagar" data-id="${esc(v.id)}">Pagó completo</button></div>` : ''}</div>`;
     }).join('') : '<p class="empty">Todavía no tiene pedidos.</p>'}`);
 }
@@ -660,17 +762,17 @@ function formAbono({ clienteId, ventaId }) {
   hoja('Registrar abono', `
     <form id="f-abono" novalidate>
       <p class="muted" style="margin-bottom:12px">${v ? 'Abono a este pedido.' : 'Se aplica primero a los pedidos más viejos.'} Debe ${money(maximo)}.</p>
-      <label class="field"><span>Monto que abona</span><input id="ab-monto" type="number" inputmode="decimal" min="1" step="any" max="${esc(maximo)}" placeholder="0"></label>
+      <label class="field"><span>Monto que abona</span><input id="ab-monto" type="number" inputmode="decimal" min="0.01" step="any" max="${esc(maximo)}" placeholder="0"></label>
       <button class="btn btn-teal" type="submit">Guardar abono</button>
     </form>`, b => $('#f-abono', b).addEventListener('submit', e => {
     e.preventDefault();
-    let monto = leerNum($('#ab-monto', b).value);
+    let monto = redondear(leerNum($('#ab-monto', b).value));
     if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
     if (monto > maximo) monto = maximo;
     aplicar(() => {
       const objetivo = v ? ventas.filter(x => x.id === v.id) : ventas.filter(x => x.clienteId === cid && debeVenta(x) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
       let resto = monto;
-      for (const x of objetivo) { if (resto <= 0) break; const aplica = Math.min(resto, debeVenta(x)); x.pagado = (x.pagado || 0) + aplica; (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto -= aplica; }
+      for (const x of objetivo) { if (resto <= 0) break; const aplica = Math.min(resto, debeVenta(x)); x.pagado = redondear((x.pagado || 0) + aplica); (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto = redondear(resto - aplica); }
     }, `Abono de ${money(monto)} guardado`);
     cerrarHoja(); verCliente(cid); repintar();
   }));
@@ -690,11 +792,411 @@ function whatsapp(id) {
   window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank', 'noopener');
 }
 
+/* =============== Proveedores y cuentas por pagar =============== */
+/* Lo que se le debe a las fincas: una compra puede pagarse en parte el día que llega y abonarse después. Es el espejo de
+   «clientes que me deben», pero al revés. Las compras anteriores se consideran pagadas por completo. */
+const debeEntrada = e => aCero(redondear(e.total - (e.pagado ?? e.total)));
+const proveedor = id => proveedores.find(x => x.id === id);
+const deudaProveedor = id => entradas.reduce((s, e) => s + (e.proveedorId === id ? debeEntrada(e) : 0), 0);
+const deudaProveedores = () => entradas.reduce((s, e) => s + (e.proveedorId ? debeEntrada(e) : 0), 0);
+
+VISTAS.proveedores = () => {
+  const total = deudaProveedores();
+  const lista = proveedores.slice().sort((a, b) => deudaProveedor(b.id) - deudaProveedor(a.id) || a.nombre.localeCompare(b.nombre, 'es'));
+  return `
+    ${cabecera('Proveedores', 'mas')}
+    <div class="card">
+      <div class="stats" style="margin-bottom:12px"><div class="stat ${total > 0 ? 'red' : 'teal'}"><div class="n">${money(total)}</div><div class="l">${total > 0 ? 'Debo en total' : 'Estás al día'}</div></div>
+        <div class="stat"><div class="n">${proveedores.length}</div><div class="l">Proveedores</div></div></div>
+      <button class="btn btn-teal" data-act="proveedor-nuevo">+ Nuevo proveedor</button>
+    </div>
+    <div class="card">${lista.length ? `<div class="list">${lista.map(p => {
+      const d = deudaProveedor(p.id), np = entradas.filter(e => e.proveedorId === p.id && debeEntrada(e) > 0).length;
+      return `<button class="row" data-act="proveedor-ver" data-id="${esc(p.id)}"><div class="main"><div class="t">${esc(p.nombre)}</div><div class="s">${esc(p.telefono || 'Sin teléfono')}${np ? ` · ${np} compra${np > 1 ? 's' : ''} por pagar` : ''}</div></div><div class="r"><strong class="${d > 0 ? 'neg' : 'pos'}">${d > 0 ? money(d) : 'Al día'}</strong></div></button>`;
+    }).join('')}</div>` : '<p class="empty">Aún no tienes proveedores. Crea uno aquí, o desde Comprar con el botón +.</p>'}</div>`;
+};
+
+function formProveedor(pv, vuelta) {
+  hoja(pv ? 'Editar proveedor' : 'Nuevo proveedor', `
+    <form id="f-prov" novalidate>
+      <label class="field"><span>Nombre (finca o proveedor)</span><input id="pv-nombre" type="text" value="${esc(pv ? pv.nombre : '')}" autocomplete="off"></label>
+      <label class="field"><span>Teléfono</span><input id="pv-tel" type="tel" inputmode="tel" value="${esc(pv ? pv.telefono : '')}"></label>
+      <label class="field"><span>Notas</span><textarea id="pv-notas" rows="2">${esc(pv ? pv.notas : '')}</textarea></label>
+      <button class="btn btn-teal" type="submit">Guardar</button>
+      ${pv && !entradas.some(e => e.proveedorId === pv.id) ? '<div class="btn-row"><button class="btn btn-ghost" type="button" id="pv-del">Eliminar proveedor</button></div>' : ''}
+    </form>`, b => {
+    $('#f-prov', b).addEventListener('submit', e => {
+      e.preventDefault();
+      const nombre = $('#pv-nombre', b).value.trim();
+      if (!nombre) return aviso('Escribe el nombre', true);
+      const dato = { nombre: nombre.slice(0, 100), telefono: $('#pv-tel', b).value.trim().slice(0, 30), notas: $('#pv-notas', b).value.trim().slice(0, 300) };
+      let id;
+      if (pv) id = pv.id; else id = 'f' + nuevoId();
+      aplicar(() => { if (pv) Object.assign(pv, dato); else proveedores.push({ id, ...dato }); }, 'Proveedor guardado');
+      cerrarHoja();
+      if (vuelta === 'compra') { const pg = $('input[name=epago]:checked'); memoCompra = { proveedorId: id, pago: pg ? pg.value : memoCompra.pago }; }
+      repintar();
+    });
+    const del = $('#pv-del', b);
+    if (del) del.addEventListener('click', () => { aplicar(() => { proveedores = proveedores.filter(x => x.id !== pv.id); }, 'Proveedor eliminado'); cerrarHoja(); repintar(); });
+  });
+}
+
+function verProveedor(id) {
+  const pv = proveedor(id); if (!pv) return;
+  const compras = entradas.filter(e => e.proveedorId === id).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+  const d = deudaProveedor(id);
+  hoja(pv.nombre, `
+    <p class="muted">${esc(pv.telefono || 'Sin teléfono')}${pv.notas ? ' · ' + esc(pv.notas) : ''}</p>
+    <div class="stats" style="margin:12px 0"><div class="stat ${d > 0 ? 'red' : 'teal'}"><div class="n">${money(d)}</div><div class="l">${d > 0 ? 'Le debes en total' : 'Estás al día'}</div></div>
+      <div class="stat"><div class="n">${compras.length}</div><div class="l">Compras</div></div></div>
+    ${pv.saldoFavor > 0 ? `<p class="muted" style="margin-bottom:12px"><strong>Saldo a favor: ${money(pv.saldoFavor)}</strong> · pagado en compras anuladas</p>` : ''}
+    <div class="btn-row">
+      ${d > 0 ? `<button class="btn btn-teal" data-act="pagar-proveedor" data-prov="${esc(id)}">Registrar pago</button>` : ''}
+      <button class="btn btn-ghost" data-act="proveedor-editar" data-id="${esc(id)}">Editar</button>
+    </div>
+    <h3 style="margin:18px 0 10px">Compras</h3>
+    ${compras.length ? compras.map(e => {
+      const p = prod(e.productoId), pag = e.pagado ?? e.total, resta = debeEntrada(e);
+      const est = resta <= 0 ? ['ok', 'Pagada'] : pag > 0 ? ['low', 'Pago parcial'] : ['out', 'Sin pagar'];
+      return `<div class="pedido"><div class="top-line"><strong>${verFecha(e.fecha)}</strong><span class="badge ${est[0]}">${est[1]}</span></div>
+        <div>${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div>
+        <div>Total ${money(e.total)} · pagado ${money(pag)} · <strong>falta ${money(resta)}</strong></div>
+        <div><button class="link-btn neutro" data-act="comprobante-compra" data-id="${esc(e.id)}">Ver comprobante${e.numero ? ' N° ' + esc(numeroTxtCompra(e.numero)) : ''}</button></div>
+        ${resta > 0 ? `<div class="btn-row"><button class="btn btn-sm btn-teal" data-act="pagar-proveedor" data-prov="${esc(id)}" data-entrada="${esc(e.id)}">Pagar</button><button class="btn btn-sm btn-sun" data-act="pagar-compra-completa" data-id="${esc(e.id)}">Pagar lo que falta</button></div>` : ''}</div>`;
+    }).join('') : '<p class="empty">Todavía no hay compras a este proveedor.</p>'}`);
+}
+
+// Aplica un pago a las compras (la indicada, o las más viejas primero) y devuelve el detalle para mostrarlo.
+function aplicarPagoProveedor(provId, entradaId, monto) {
+  const detalle = [];
+  const ok = aplicar(() => {
+    const objetivo = entradaId ? entradas.filter(x => x.id === entradaId) : entradas.filter(x => x.proveedorId === provId && debeEntrada(x) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
+    let resto = monto;
+    for (const x of objetivo) {
+      if (resto <= 0) break;
+      const aplica = Math.min(resto, debeEntrada(x));
+      x.pagado = redondear((x.pagado ?? x.total) + aplica); (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto = redondear(resto - aplica);
+      detalle.push({ id: x.id, fecha: x.fecha, productoId: x.productoId, aplicado: aplica, resta: debeEntrada(x), total: x.total });
+    }
+  }, '');
+  return ok ? detalle : null;
+}
+// Después de pagar: dice cuánto se pagó y cuánto falta por pagar.
+function resultadoPagoProveedor(provId, pagado, detalle) {
+  const pv = proveedor(provId), falta = deudaProveedor(provId);
+  hoja('Pago registrado', `
+    <div class="no-print">
+    <div class="stats" style="margin-bottom:12px"><div class="stat teal"><div class="n">${money(pagado)}</div><div class="l">Pagaste</div></div>
+      <div class="stat ${falta > 0 ? 'red' : 'teal'}"><div class="n">${money(falta)}</div><div class="l">${falta > 0 ? 'Falta por pagar' : 'Estás al día'}</div></div></div>
+    <p class="muted" style="margin-bottom:8px">${esc(pv ? pv.nombre : 'Proveedor')} · ${verFecha(hoy())}</p>
+    ${detalle.map(d => { const p = prod(d.productoId); return `<div class="row"><div class="main"><div class="t">${verFecha(d.fecha)} · ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">Pagaste ${money(d.aplicado)} de ${money(d.total)}</div></div><div class="r"><strong class="${d.resta > 0 ? 'neg' : 'pos'}">${d.resta > 0 ? 'faltan ' + money(d.resta) : 'Pagada'}</strong></div></div>`; }).join('')}
+    </div>
+    ${comprobantePagoHTML(provId, pagado, detalle)}
+    <div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc">Imprimir comprobante</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+}
+function formPagoProveedor({ proveedorId, entradaId }) {
+  const e0 = entradaId ? entradas.find(x => x.id === entradaId) : null;
+  const pid = proveedorId || (e0 && e0.proveedorId);
+  const maximo = e0 ? debeEntrada(e0) : deudaProveedor(pid);
+  hoja('Registrar pago', `
+    <form id="f-pago-prov" novalidate>
+      <p class="muted" style="margin-bottom:12px">${e0 ? 'Pago a esta compra.' : 'Se aplica primero a las compras más viejas.'} Le debes ${money(maximo)}.</p>
+      <label class="field"><span>Monto que pagas</span><input id="pp-monto" type="number" inputmode="decimal" min="0.01" step="any" max="${esc(maximo)}" placeholder="0"></label>
+      <button class="btn btn-teal" type="submit">Guardar pago</button>
+    </form>`, b => $('#f-pago-prov', b).addEventListener('submit', ev => {
+    ev.preventDefault();
+    let monto = redondear(leerNum($('#pp-monto', b).value));
+    if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
+    if (monto > maximo) monto = maximo;
+    const detalle = aplicarPagoProveedor(pid, entradaId, monto);
+    if (!detalle) return;
+    cerrarHoja(); resultadoPagoProveedor(pid, monto, detalle); repintar();
+  }));
+}
+function pagarCompraCompleta(entradaId) {
+  const e = entradas.find(x => x.id === entradaId); if (!e || !e.proveedorId) return;
+  const monto = debeEntrada(e); if (monto <= 0) return;
+  const detalle = aplicarPagoProveedor(e.proveedorId, entradaId, monto);
+  if (!detalle) return;
+  cerrarHoja(); resultadoPagoProveedor(e.proveedorId, monto, detalle); repintar();
+}
+
+/* =============== Gráficos de ganancias =============== */
+/* Gráficos dibujados con SVG propio (sin librerías, funcionan sin internet). La ganancia es la misma de todo el resto
+   de la app: lo vendido menos lo que costó lo vendido. */
+let grafTipo = 'semanas';
+const GRAF = { semanas: 'Últimas 8 semanas', meses: 'Últimos 6 meses', anio: 'Últimos 12 meses' };
+
+function periodosGrafico(tipo) {
+  const out = [], h = hoy();
+  if (tipo === 'semanas') {
+    const lunes = lunesDe(h);
+    for (let i = 7; i >= 0; i--) { const ini = sumarDias(lunes, -7 * i); out.push({ ini, fin: sumarDias(ini, 6), etiqueta: verFecha(ini).slice(0, 5), nombre: `Semana del ${verFecha(ini).slice(0, 5)}` }); }
+  } else {
+    const n = tipo === 'anio' ? 12 : 6, f = fechaDe(h);
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(f.getFullYear(), f.getMonth() - i, 1), y = d.getFullYear(), m = d.getMonth();
+      out.push({ ini: `${y}-${pad(m + 1)}-01`, fin: `${y}-${pad(m + 1)}-${pad(new Date(y, m + 1, 0).getDate())}`, etiqueta: MESES[m].slice(0, 3), nombre: `${MESES[m]} ${y}` });
+    }
+  }
+  return out;
+}
+function datosGrafico(tipo) {
+  return periodosGrafico(tipo).map(p => {
+    const en = f => f >= p.ini && f <= p.fin;
+    const ven = ventas.filter(v => en(v.fecha)), vendido = ven.reduce((s, v) => s + v.total, 0);
+    return { ...p, vendido, compras: entradas.filter(e => en(e.fecha)).reduce((s, e) => s + e.total, 0), ganancia: vendido - ven.reduce((s, v) => s + costoVenta(v), 0),
+      perdidas: ajustes.filter(a => en(a.fecha)).reduce((s, a) => s + a.cantidad * (a.costoUnitario || 0), 0) };
+  });
+}
+// $1,2 M · $350 mil · $800
+function corto(n) {
+  const a = Math.abs(n), sg = n < 0 ? '-' : '';
+  if (a >= 1e6) return `${sg}$${(a / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace('.', ',')} M`;
+  if (a >= 1e3) return `${sg}$${Math.round(a / 1e3)} mil`;
+  return `${sg}$${Math.round(a)}`;
+}
+const bonito = x => { const p = Math.pow(10, Math.floor(Math.log10(x))), f = x / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; };
+
+function graficoBarras({ titulo, etiquetas, series }) {
+  const W = 340, H = 200, ml = 48, mr = 8, mt = 12, mb = 24;
+  const todos = series.flatMap(s => s.valores), max = Math.max(0, ...todos), min = Math.min(0, ...todos);
+  const paso = bonito(((max - min) || 1) / 4);
+  const top = Math.ceil(max / paso) * paso || paso, bot = Math.floor(min / paso) * paso;
+  const y = v => mt + (top - v) / (top - bot) * (H - mt - mb);
+  const n = etiquetas.length, gw = (W - ml - mr) / n, bw = Math.min(28, gw * 0.78 / series.length);
+  const trama = series.length > 1; // la segunda serie lleva trama diagonal: se distingue sin depender del color
+  let g = '';
+  const lineas = Math.round((top - bot) / paso);
+  for (let i = 0; i <= lineas; i++) { const v = bot + i * paso; g += `<line class="g-grid" x1="${ml}" x2="${W - mr}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="g-txt" x="${ml - 5}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${esc(corto(v))}</text>`; }
+  g += `<line class="g-zero" x1="${ml}" x2="${W - mr}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>`;
+  etiquetas.forEach((et, i) => {
+    const x0 = ml + i * gw + (gw - bw * series.length) / 2;
+    series.forEach((s, k) => {
+      const v = s.valores[i]; if (!v) return;
+      const alto = Math.max(Math.abs(y(v) - y(0)), 1.5), yy = v >= 0 ? y(0) - alto : y(0);
+      g += `<rect class="g-bar ${v < 0 && s.neg ? 'g-neg' : 'g-s' + k}${trama && k === 1 ? ' g-trama' : ''}" x="${(x0 + k * bw).toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${alto.toFixed(1)}" rx="2"><title>${esc(et)} · ${esc(s.nombre)}: ${esc(money(v))}</title></rect>`;
+    });
+    if (gw >= 30 || (n - 1 - i) % 2 === 0) g += `<text class="g-txt" x="${(ml + i * gw + gw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(et)}</text>`; // grupos angostos: una etiqueta de cada dos, siempre la última
+  });
+  const tabla = `<details class="datos"><summary>Ver los números</summary><table class="tbl"><thead><tr><th>${etiquetas.length ? 'Período' : ''}</th>${series.map(s => `<th class="num">${esc(s.nombre)}</th>`).join('')}</tr></thead><tbody>${etiquetas.map((et, i) => `<tr><td>${esc(et)}</td>${series.map(s => `<td class="num">${money(s.valores[i])}</td>`).join('')}</tr>`).join('')}</tbody></table></details>`;
+  const leyenda = series.length > 1 ? `<div class="leyenda">${series.map((s, k) => `<span><i class="g-s${k}"></i>${esc(s.nombre)}</span>`).join('')}</div>` : '';
+  const defs = trama ? '<defs><pattern id="g-trama" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--sun)"/><line x1="0" y1="0" x2="0" y2="6" style="stroke:var(--ink);stroke-width:2.5"/></pattern></defs>' : '';
+  return `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(titulo)}"><title>${esc(titulo)}</title>${defs}${g}</svg>${leyenda}${tabla}`;
+}
+
+VISTAS.graficos = () => {
+  const datos = datosGrafico(grafTipo), et = datos.map(d => d.etiqueta);
+  const ini = datos[0].ini, fin = datos[datos.length - 1].fin;
+  const tot = datos.reduce((a, d) => ({ vendido: a.vendido + d.vendido, ganancia: a.ganancia + d.ganancia, compras: a.compras + d.compras, perdidas: a.perdidas + d.perdidas }), { vendido: 0, ganancia: 0, compras: 0, perdidas: 0 });
+  const hay = datos.some(d => d.vendido || d.compras);
+  const mejor = datos.reduce((a, d) => (d.ganancia > a.ganancia ? d : a), datos[0]);
+  const margen = tot.vendido > 0 ? Math.round(tot.ganancia / tot.vendido * 100) : 0;
+  const porProd = new Map();
+  ventas.filter(v => v.fecha >= ini && v.fecha <= fin).forEach(v => porProd.set(v.productoId, (porProd.get(v.productoId) || 0) + v.total - costoVenta(v)));
+  const top = [...porProd.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6), maxTop = Math.max(1, ...top.map(t => t[1]));
+  const deben = deudaTotal(), debo = deudaProveedores();
+  return `
+    ${cabecera('Gráficos', 'mas')}
+    <div class="tabs tres no-print" role="tablist">${Object.entries(GRAF).map(([k, t]) => `<button role="tab" aria-selected="${k === grafTipo}" class="${k === grafTipo ? 'on' : ''}" data-act="graf-tipo" data-t="${k}">${t.replace('Últimas ', '').replace('Últimos ', '')}</button>`).join('')}</div>
+    <p class="view-sub" style="margin-top:0">${GRAF[grafTipo]}</p>
+    <section class="card"><div class="stats una">
+      <div class="stat teal"><div class="n ${tot.ganancia < 0 ? 'neg' : ''}">${money(tot.ganancia)}</div><div class="l">Ganancia del período</div></div>
+      <div class="stat sun"><div class="n">${money(tot.vendido)}</div><div class="l">Vendido</div></div></div>
+      <div class="stats" style="margin-top:10px">
+      <div class="stat"><div class="n">${margen}%</div><div class="l">Margen sobre lo vendido</div></div>
+      <div class="stat"><div class="n">${mejor.ganancia > 0 ? esc(mejor.etiqueta) : '—'}</div><div class="l">${mejor.ganancia > 0 ? `Mejor ${grafTipo === 'semanas' ? 'semana' : 'mes'}: ${money(mejor.ganancia)}` : 'Aún sin ganancias'}</div></div>
+    </div></section>
+    ${hay ? `
+    <section class="card"><h3>Ganancia por ${grafTipo === 'semanas' ? 'semana' : 'mes'}</h3>
+      ${graficoBarras({ titulo: `Ganancia por ${grafTipo === 'semanas' ? 'semana' : 'mes'}, ${GRAF[grafTipo].toLowerCase()}`, etiquetas: et, series: [{ nombre: 'Ganancia', valores: datos.map(d => d.ganancia), neg: true }] })}</section>
+    <section class="card"><h3>Ventas y compras</h3>
+      ${graficoBarras({ titulo: `Ventas y compras, ${GRAF[grafTipo].toLowerCase()}`, etiquetas: et, series: [{ nombre: 'Vendido', valores: datos.map(d => d.vendido) }, { nombre: 'Comprado', valores: datos.map(d => d.compras) }] })}</section>
+    <section class="card"><h3>Lo que más deja</h3>${top.length ? `<div class="list">${top.map(([id, g]) => { const p = prod(id); return `<div class="row"><div class="main"><div class="t">${esc(p ? p.name : 'Producto eliminado')}</div><div class="hbar"><span style="width:${Math.max(0, Math.round(g / maxTop * 100))}%"></span></div></div><div class="r"><strong class="${g < 0 ? 'neg' : ''}">${money(g)}</strong></div></div>`; }).join('')}</div>` : '<p class="empty">Sin ventas en este período.</p>'}</section>
+    <section class="card"><h3>Pendiente hoy</h3><div class="stats">
+      <div class="stat ${deben > 0 ? 'red' : ''}"><div class="n">${money(deben)}</div><div class="l">Me deben los clientes</div></div>
+      <div class="stat ${debo > 0 ? 'red' : ''}"><div class="n">${money(debo)}</div><div class="l">Debo a proveedores</div></div></div>
+      ${tot.perdidas > 0 ? `<p class="muted" style="margin-top:10px">Pérdidas del período (huevos rotos, vencidos): ${money(tot.perdidas)}.</p>` : ''}</section>`
+    : '<section class="card"><p class="empty">Todavía no hay ventas ni compras en este período. Cuando registres movimientos, aquí verás cómo van tus ganancias.</p></section>'}`;
+};
+
+/* =============== Comprobante de venta =============== */
+/* Documento formal para imprimir: encabezado del negocio, número consecutivo, cliente, detalle, totales, saldo y firmas.
+   Es una base de control interno que ya reúne los datos que pide una factura (emisor, adquirente, consecutivo, detalle,
+   valores, forma de pago), pero NO es una factura electrónica de venta ante la DIAN. */
+const numeroTxt = n => { const pf = (config.negocio && config.negocio.prefijo) || ''; return `${pf}${pf ? '-' : ''}${String(n).padStart(6, '0')}`; };
+
+// Las ventas de un mismo cliente en el mismo día salen juntas en un comprobante; una vez numerado, el grupo queda fijo.
+// Un número solo agrupa ventas del MISMO cliente (dos clientes con el mismo número nunca se mezclan) y el mostrador va solo.
+function grupoComprobante(v) {
+  if (!v.clienteId) return [v];
+  if (v.numero) return ventas.filter(x => x.numero === v.numero && x.clienteId === v.clienteId);
+  return ventas.filter(x => x.clienteId === v.clienteId && x.fecha === v.fecha && !x.numero);
+}
+// Mayor número emitido: de las ventas vivas y de las anuladas (un número impreso nunca se reutiliza).
+const mayorNumero = () => Math.max(0, ...ventas.map(v => v.numero || 0), ...config.anulados.map(a => a.numero));
+function siguienteNumero() {
+  const usados = new Set([...ventas.map(v => v.numero), ...config.anulados.map(a => a.numero)]);
+  let n = Math.max(1, config.consecutivo);
+  while (usados.has(n)) n++;
+  return n;
+}
+// Asigna el siguiente número libre a todo el grupo y avanza el consecutivo. Devuelve false si no se pudo guardar.
+function numerarGrupo(grupo) {
+  const n = siguienteNumero();
+  if (n > MAX_NUMERO) { aviso('Se acabaron los números de comprobante (el máximo es 999999999).', true); return false; }
+  const ids = new Set(grupo.map(x => x.id));
+  return aplicar(() => { ventas.forEach(x => { if (ids.has(x.id)) x.numero = n; }); config.consecutivo = n + 1; }, '');
+}
+function comprobanteHTML(grupo) {
+  const neg = config.negocio, v0 = grupo[0], c = cliente(v0.clienteId);
+  const total = grupo.reduce((s, v) => s + v.total, 0), saldo = grupo.reduce((s, v) => s + debeVenta(v), 0), pagado = total - saldo;
+  const credito = grupo.some(v => v.tipoPago === 'credito');
+  const filas = grupo.map(v => {
+    const p = prod(v.productoId), panal = v.panales != null && v.panales > 0;
+    return `<tr><td>${esc(p ? p.name : 'Producto eliminado')}${panal ? `<small> · panal de ${num(v.cantidad / v.panales)} u.</small>` : ''}</td><td class="num">${panal ? num(v.panales) + (v.panales === 1 ? ' panal' : ' panales') : num(v.cantidad) + ' ' + esc(p ? p.unit : '')}</td><td class="num">${money(panal ? v.precioPanal : v.precio)}</td><td class="num">${money(v.total)}</td></tr>`;
+  }).join('');
+  const linea = (t, v) => (v ? `<div>${t}${esc(v)}</div>` : '');
+  const anul = v0.numero ? config.anulados.filter(a => a.numero === v0.numero) : [];
+  const notaAnulados = anul.length ? `<p class="doc-nota doc-anulados"><strong>Este comprobante tuvo ${anul.length} ${anul.length === 1 ? 'venta anulada' : 'ventas anuladas'} por ${money(anul.reduce((s, a) => s + a.total, 0))}.</strong></p>` : '';
+  return `<article class="doc">
+    <header class="doc-head">
+      <div class="doc-emisor"><h2>${esc(neg.nombre || 'El Gallinero')}</h2>${linea('NIT / CC: ', neg.nit)}${linea('', neg.direccion)}${linea('', [neg.ciudad, neg.telefono].filter(Boolean).join(' · '))}</div>
+      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE VENTA</div><div class="doc-n">${v0.numero ? 'N° ' + esc(numeroTxt(v0.numero)) : 'Borrador · el número se asigna al imprimir'}</div><div>Fecha: ${verFecha(v0.fecha)}</div></div>
+    </header>
+    <section class="doc-cliente"><h3>Cliente</h3>
+      <div><strong>${esc(c ? c.nombre : 'Consumidor final (mostrador)')}</strong></div>${c ? linea('Cédula / NIT: ', c.documento) + linea('Teléfono: ', c.telefono) + linea('Dirección / notas: ', c.notas) : ''}</section>
+    <table class="doc-tabla"><thead><tr><th>Descripción</th><th class="num">Cantidad</th><th class="num">V. unitario</th><th class="num">V. total</th></tr></thead><tbody>${filas}</tbody></table>
+    <div class="doc-totales">
+      <div><span>Forma de pago</span><strong>${credito ? 'Crédito' : 'Contado'}</strong></div>
+      <div><span>Total</span><strong>${money(total)}</strong></div>
+      ${credito ? `<div><span>Abonado</span><strong>${money(pagado)}</strong></div><div class="doc-saldo"><span>Saldo pendiente</span><strong>${money(saldo)}</strong></div>` : ''}
+    </div>
+    <div class="doc-firmas"><div>Entrega</div><div>Recibe</div></div>
+    ${notaAnulados}<p class="doc-nota">Comprobante de venta de control interno. No es una factura electrónica de venta ni reemplaza la expedida ante la DIAN.</p>
+  </article>`;
+}
+function comprobantePagoHTML(provId, pagado, detalle) {
+  const neg = config.negocio, pv = proveedor(provId), falta = deudaProveedor(provId);
+  const filas = detalle.map(d => { const p = prod(d.productoId); return `<tr><td>${verFecha(d.fecha)} · ${esc(p ? p.name : 'Producto eliminado')}</td><td class="num">${money(d.total)}</td><td class="num">${money(d.aplicado)}</td><td class="num">${money(d.resta)}</td></tr>`; }).join('');
+  return `<article class="doc">
+    <header class="doc-head"><div class="doc-emisor"><h2>${esc(neg.nombre || 'El Gallinero')}</h2>${neg.nit ? `<div>NIT / CC: ${esc(neg.nit)}</div>` : ''}</div>
+      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE PAGO A PROVEEDOR</div><div>Fecha: ${verFecha(hoy())}</div></div></header>
+    <section class="doc-cliente"><h3>Proveedor</h3><div><strong>${esc(pv ? pv.nombre : 'Proveedor')}</strong></div>${pv && pv.telefono ? `<div>Teléfono: ${esc(pv.telefono)}</div>` : ''}</section>
+    <table class="doc-tabla"><thead><tr><th>Compra</th><th class="num">Valor</th><th class="num">Pagado ahora</th><th class="num">Saldo</th></tr></thead><tbody>${filas}</tbody></table>
+    <div class="doc-totales"><div><span>Total pagado</span><strong>${money(pagado)}</strong></div><div class="doc-saldo"><span>Falta por pagar</span><strong>${money(falta)}</strong></div></div>
+    <div class="doc-firmas"><div>Paga</div><div>Recibe</div></div>
+  </article>`;
+}
+// Abrir un comprobante NO gasta número: sin número es una vista previa (borrador). El número se asigna al imprimir.
+function abrirComprobante(id) {
+  const v = ventas.find(x => x.id === id); if (!v) return;
+  hoja('Comprobante de venta', `${comprobanteHTML(grupoComprobante(v))}<div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc" data-id="${esc(v.id)}">Imprimir</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+}
+// Imprime un comprobante de venta: si aún no tiene número se le asigna antes (y si no se puede guardar, no se imprime).
+function imprimirComprobante(id) {
+  const v = ventas.find(x => x.id === id); if (!v) return;
+  if (!v.numero) {
+    if (!numerarGrupo(grupoComprobante(v))) return aviso('No se pudo guardar el número del comprobante, así que no se imprimió. Libera espacio e inténtalo de nuevo.', true);
+    abrirComprobante(id); repintar(); // ya con su número
+  }
+  imprimirDocumento();
+}
+function imprimirDocumento() {
+  document.body.classList.add('imprime-doc');
+  try { window.print(); }
+  catch { document.body.classList.remove('imprime-doc'); aviso('No se pudo abrir la impresión en este navegador', true); }
+  finally { setTimeout(() => document.body.classList.remove('imprime-doc'), 1000); } // por si el navegador no avisa al terminar
+}
+
+/* =============== Comprobante de compra (a las fincas) =============== */
+/* Documento de la compra a un proveedor: qué llegó, cuánto vale, si se pagó en su totalidad, cuánto se pagó y cuánto queda
+   pendiente (con la fecha de cada pago). Numeración propia (prefijo y consecutivo de compras). Es de control interno: no
+   reemplaza la factura del proveedor ni el documento soporte que exija la DIAN. */
+const numeroTxtCompra = n => { const pf = (config.negocio && config.negocio.prefijoCompra) || ''; return `${pf}${pf ? '-' : ''}${String(n).padStart(6, '0')}`; };
+// Las compras al mismo proveedor el mismo día salen juntas (una entrega, un comprobante); una vez numerado, el grupo queda fijo.
+function grupoCompra(e) {
+  if (!e.proveedorId) return [e];
+  if (e.numero) return entradas.filter(x => x.numero === e.numero && x.proveedorId === e.proveedorId);
+  return entradas.filter(x => x.proveedorId === e.proveedorId && x.fecha === e.fecha && !x.numero);
+}
+const mayorNumeroCompra = () => Math.max(0, ...entradas.map(e => e.numero || 0), ...config.anuladosCompra.map(a => a.numero));
+function siguienteNumeroCompra() {
+  const usados = new Set([...entradas.map(e => e.numero), ...config.anuladosCompra.map(a => a.numero)]);
+  let n = Math.max(1, config.consecutivoCompra);
+  while (usados.has(n)) n++;
+  return n;
+}
+function numerarGrupoCompra(grupo) {
+  const n = siguienteNumeroCompra();
+  if (n > MAX_NUMERO) { aviso('Se acabaron los números de comprobante de compra (el máximo es 999999999).', true); return false; }
+  const ids = new Set(grupo.map(x => x.id));
+  return aplicar(() => { entradas.forEach(x => { if (ids.has(x.id)) x.numero = n; }); config.consecutivoCompra = n + 1; }, '');
+}
+// Pagos de la compra: el que se hizo al recibir la mercancía y los abonos posteriores, cada uno con su fecha.
+function pagosDeCompra(grupo) {
+  const out = [];
+  grupo.forEach(e => {
+    const abonos = e.abonos || [], sumaAbonos = redondear(abonos.reduce((s, a) => s + a.monto, 0)), inicial = redondear((e.pagado ?? e.total) - sumaAbonos);
+    if (inicial > 0.004) out.push({ fecha: e.fecha, concepto: 'Al recibir la mercancía', monto: inicial });
+    abonos.forEach(a => out.push({ fecha: a.fecha, concepto: 'Abono', monto: a.monto }));
+  });
+  return out.sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+function comprobanteCompraHTML(grupo) {
+  const neg = config.negocio, e0 = grupo[0], pv = proveedor(e0.proveedorId);
+  const total = redondear(grupo.reduce((s, e) => s + e.total, 0)), pagado = redondear(grupo.reduce((s, e) => s + Math.min(e.total, e.pagado ?? e.total), 0));
+  const pendiente = aCero(redondear(total - pagado));
+  const estado = pendiente <= 0 ? 'Pagada en su totalidad' : pagado > 0 ? 'Pago parcial' : 'Sin pagos: todo está pendiente';
+  const filas = grupo.map(e => {
+    const p = prod(e.productoId), panal = e.panales != null && e.panales > 0;
+    return `<tr><td>${esc(p ? p.name : 'Producto eliminado')}${panal ? `<small> · panal de ${num(e.cantidad / e.panales)} u.</small>` : ''}${e.vence ? `<small> · vence ${verFecha(e.vence)}</small>` : ''}</td><td class="num">${panal ? num(e.panales) + (e.panales === 1 ? ' panal' : ' panales') : num(e.cantidad) + ' ' + esc(p ? p.unit : '')}</td><td class="num">${money(panal ? e.costoPanal : e.costoUnitario)}</td><td class="num">${money(e.total)}</td></tr>`;
+  }).join('');
+  const pagos = pagosDeCompra(grupo);
+  const filasPagos = pagos.length ? pagos.map(p => `<tr><td>${verFecha(p.fecha)}</td><td>${esc(p.concepto)}</td><td class="num">${money(p.monto)}</td></tr>`).join('') : '<tr><td colspan="3">Todavía no se ha registrado ningún pago.</td></tr>';
+  const linea = (t, v) => (v ? `<div>${t}${esc(v)}</div>` : '');
+  const anul = e0.numero ? config.anuladosCompra.filter(a => a.numero === e0.numero) : [];
+  const notaAnulados = anul.length ? `<p class="doc-nota doc-anulados"><strong>Este comprobante tuvo ${anul.length} ${anul.length === 1 ? 'compra anulada' : 'compras anuladas'} por ${money(anul.reduce((s, a) => s + a.total, 0))}.</strong></p>` : '';
+  return `<article class="doc">
+    <header class="doc-head">
+      <div class="doc-emisor"><h2>${esc(neg.nombre || 'El Gallinero')}</h2>${linea('NIT / CC: ', neg.nit)}${linea('', neg.direccion)}${linea('', [neg.ciudad, neg.telefono].filter(Boolean).join(' · '))}</div>
+      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE COMPRA</div><div class="doc-n">${e0.numero ? 'N° ' + esc(numeroTxtCompra(e0.numero)) : 'Borrador · el número se asigna al imprimir'}</div><div>Fecha: ${verFecha(e0.fecha)}</div></div>
+    </header>
+    <section class="doc-cliente"><h3>Proveedor</h3>
+      <div><strong>${esc(pv ? pv.nombre : 'Sin proveedor registrado')}</strong></div>${pv ? linea('Teléfono: ', pv.telefono) + linea('Notas: ', pv.notas) : ''}</section>
+    <div class="doc-estado ${pendiente > 0 ? 'pend' : 'ok'}">${estado}</div>
+    <table class="doc-tabla"><thead><tr><th>Descripción</th><th class="num">Cantidad</th><th class="num">V. unitario</th><th class="num">V. total</th></tr></thead><tbody>${filas}</tbody></table>
+    <div class="doc-totales">
+      <div><span>Total de la compra</span><strong>${money(total)}</strong></div>
+      <div><span>Pagado</span><strong>${money(pagado)}</strong></div>
+      <div class="doc-saldo"><span>Pendiente por pagar</span><strong>${money(pendiente)}</strong></div>
+    </div>
+    <h3 class="doc-sub">Pagos registrados</h3>
+    <table class="doc-tabla doc-pagos"><thead><tr><th>Fecha</th><th>Concepto</th><th class="num">Valor</th></tr></thead><tbody>${filasPagos}</tbody></table>
+    <div class="doc-firmas"><div>Recibe la mercancía</div><div>Entrega (proveedor)</div></div>
+    ${notaAnulados}<p class="doc-nota">Comprobante de compra de control interno. No reemplaza la factura del proveedor ni el documento soporte que exija la DIAN cuando aplique.</p>
+  </article>`;
+}
+// Abrir un comprobante de compra NO gasta número: sin número es una vista previa (borrador). El número se asigna al imprimir.
+function abrirComprobanteCompra(id) {
+  const e = entradas.find(x => x.id === id); if (!e) return;
+  hoja('Comprobante de compra', `${comprobanteCompraHTML(grupoCompra(e))}<div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc" data-tipo="compra" data-id="${esc(e.id)}">Imprimir</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+}
+function imprimirComprobanteCompra(id) {
+  const e = entradas.find(x => x.id === id); if (!e) return;
+  if (!e.numero) {
+    if (!numerarGrupoCompra(grupoCompra(e))) return aviso('No se pudo guardar el número del comprobante, así que no se imprimió. Libera espacio e inténtalo de nuevo.', true);
+    abrirComprobanteCompra(id); repintar(); // ya con su número
+  }
+  imprimirDocumento();
+}
+
 /* =============== Más =============== */
 VISTAS.mas = () => `
   ${cabecera('Más')}
   <div class="card menu"><div class="list">
-    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
+    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
       .map(([v, i, t, s]) => `<button class="row" data-act="ir" data-v="${v}"><span class="ico">${icono(i)}</span><span class="main"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">&rsaquo;</span></button>`).join('')}
   </div></div>
   <div class="card"><h3>Instalar en el celular</h3>
@@ -802,6 +1304,7 @@ VISTAS.reportes = () => {
   const gan = totVentas - ven.reduce((s, v) => s + costoVenta(v), 0);
   const totPer = per.reduce((s, a) => s + a.cantidad * (a.costoUnitario || 0), 0);
   const porCobrar = ven.reduce((s, v) => s + (v.clienteId ? debeVenta(v) : 0), 0);
+  const porPagar = ent.reduce((s, e) => s + (e.proveedorId ? debeEntrada(e) : 0), 0);
   const agrupar = (arr, f) => { const m = new Map(); arr.forEach(x => { const o = m.get(x.productoId) || { c: 0, t: 0, k: 0 }; f(o, x); m.set(x.productoId, o); }); return [...m.entries()]; };
   const nombre = id => { const p = prod(id); return esc(p ? p.name : 'Producto eliminado'); };
   const gEnt = agrupar(ent, (o, e) => { o.c += e.cantidad; o.t += e.total; });
@@ -816,11 +1319,12 @@ VISTAS.reportes = () => {
       <div class="stats" style="margin-bottom:16px">
         <div class="stat sun"><div class="n">${money(totVentas)}</div><div class="l">Vendido</div></div>
         <div class="stat teal"><div class="n ${gan < 0 ? 'neg' : ''}">${money(gan)}</div><div class="l">Ganancia bruta</div></div>
-        <div class="stat"><div class="n">${money(totCompras)}</div><div class="l">Pagado en compras</div></div>
+        <div class="stat"><div class="n">${money(totCompras)}</div><div class="l">Compras del período</div></div>
         <div class="stat ${porCobrar > 0 ? 'red' : ''}"><div class="n">${money(porCobrar)}</div><div class="l">Quedó por cobrar</div></div>
+        <div class="stat ${porPagar > 0 ? 'red' : ''}"><div class="n">${money(porPagar)}</div><div class="l">Quedó por pagar</div></div>
       </div>
       <div class="sec-title">Ventas</div>${gVen.length ? tabla(['Producto', 'Cant.', 'Total', 'Ganancia'], gVen.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td><td class="num ${o.t - o.k < 0 ? 'neg' : ''}">${money(o.t - o.k)}</td></tr>`), ['Total', num(gVen.reduce((s, [, o]) => s + o.c, 0)), money(totVentas), money(gan)]) : '<p class="empty">Sin ventas en este período.</p>'}
-      <div class="sec-title" style="margin-top:18px">Compras y llegadas</div>${gEnt.length ? tabla(['Producto', 'Cant.', 'Pagado'], gEnt.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td></tr>`), ['Total', num(gEnt.reduce((s, [, o]) => s + o.c, 0)), money(totCompras)]) : '<p class="empty">Sin compras en este período.</p>'}
+      <div class="sec-title" style="margin-top:18px">Compras y llegadas</div>${gEnt.length ? tabla(['Producto', 'Cant.', 'Valor'], gEnt.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td></tr>`), ['Total', num(gEnt.reduce((s, [, o]) => s + o.c, 0)), money(totCompras)]) : '<p class="empty">Sin compras en este período.</p>'}
       ${gPer.length ? `<div class="sec-title" style="margin-top:18px">Pérdidas</div>${tabla(['Producto', 'Cant.', 'Costo'], gPer.map(([id, o]) => `<tr><td>${nombre(id)}</td><td class="num">${num(o.c)}</td><td class="num">${money(o.t)}</td></tr>`), ['Total', num(gPer.reduce((s, [, o]) => s + o.c, 0)), money(totPer)])}` : ''}
     </section>
     <div class="btn-row no-print"><button class="btn btn-ghost" data-act="imprimir">Imprimir / PDF</button><button class="btn btn-ghost" data-act="csv">Exportar a Excel</button></div>`;
@@ -857,12 +1361,13 @@ async function restaurarTexto(texto) {
   let d;
   try { d = JSON.parse(texto); } catch { return aviso('El archivo no es un respaldo válido', true); }
   if (!d || d.app !== 'el-gallinero' || !Array.isArray(d.products) || !Array.isArray(d.ventas) || !Array.isArray(d.entradas) || !Array.isArray(d.clientes)) return aviso('El archivo no es un respaldo de El Gallinero', true);
-  const { datos, errores } = limpiar(d);
+  if (Number.isFinite(d.version) && d.version > SCHEMA) return aviso('Este respaldo viene de una versión más nueva de la app: actualiza la app para poder restaurarlo.', true);
+  const { datos, errores, recuperados } = limpiar(d);
   if (errores.length) return aviso(`El respaldo tiene ${errores.length} registro(s) con datos inválidos (${errores.slice(0, 3).join(', ')}). No se restauró nada.`, true);
   migrar(datos);
   if (!(await confirmar({ titulo: 'Restaurar respaldo', texto: `Se reemplazarán TODOS los datos de este teléfono por los del respaldo (${datos.ventas.length} ventas, ${datos.clientes.length} clientes). ¿Continuar?`, ok: 'Restaurar', peligro: true }))) return;
   try { localStorage.setItem(CLAVE_PREV, JSON.stringify(estado())); } catch { return aviso('No hay espacio para guardar una copia de lo actual. No se restauró nada.', true); }
-  const ok = aplicar(() => poner(datos), 'Datos restaurados');
+  const ok = aplicar(() => poner(datos), recuperados ? `Datos restaurados. Se recuperaron ${recuperados} proveedor(es) sin nombre: ponles nombre en Proveedores.` : 'Datos restaurados');
   repintar();
   return ok;
 }
@@ -903,6 +1408,26 @@ VISTAS.ajustes = () => `
     <label class="field"><span>Vida útil del huevo (días)</span><input id="aj-vida" type="number" inputmode="numeric" min="7" max="60" value="${esc(config.vidaUtil)}"><div class="hint">Contada desde que sale de la granja. En clima cálido, entre 15 y 25 días.</div></label>
     <button class="btn btn-teal" type="submit">Guardar ajustes</button>
   </form>
+  <form id="f-neg" class="card" novalidate>
+    <h3>Datos del negocio</h3>
+    <p class="muted" style="margin-bottom:12px">Salen en el encabezado del comprobante de venta.</p>
+    <label class="field"><span>Nombre o razón social</span><input id="ng-nombre" type="text" value="${esc(config.negocio.nombre)}" autocomplete="off"></label>
+    <label class="field"><span>NIT o cédula</span><input id="ng-nit" type="text" value="${esc(config.negocio.nit)}" autocomplete="off"></label>
+    <label class="field"><span>Dirección</span><input id="ng-dir" type="text" value="${esc(config.negocio.direccion)}" autocomplete="off"></label>
+    <div class="row2">
+      <label class="field"><span>Ciudad</span><input id="ng-ciudad" type="text" value="${esc(config.negocio.ciudad)}" autocomplete="off"></label>
+      <label class="field"><span>Teléfono</span><input id="ng-tel" type="tel" inputmode="tel" value="${esc(config.negocio.telefono)}"></label>
+    </div>
+    <div class="row2">
+      <label class="field"><span>Prefijo</span><input id="ng-prefijo" type="text" maxlength="6" value="${esc(config.negocio.prefijo)}" autocomplete="off"><div class="hint">Hasta 6 letras o números. Ej: CV</div></label>
+      <label class="field"><span>Próximo número</span><input id="ng-consec" type="number" inputmode="numeric" min="${esc(mayorNumero() + 1)}" step="1" value="${esc(config.consecutivo)}"><div class="hint">Para seguir tu propia numeración. No puede ser menor a lo ya emitido.</div></label>
+    </div>
+    <div class="row2">
+      <label class="field"><span>Prefijo de compras</span><input id="ng-prefijo-c" type="text" maxlength="6" value="${esc(config.negocio.prefijoCompra)}" autocomplete="off"><div class="hint">Comprobantes de compra. Ej: CP</div></label>
+      <label class="field"><span>Próximo n.° de compra</span><input id="ng-consec-c" type="number" inputmode="numeric" min="1" step="1" value="${esc(config.consecutivoCompra)}"></label>
+    </div>
+    <button class="btn btn-teal" type="submit">Guardar datos del negocio</button>
+  </form>
   <p class="muted" style="margin-top:12px">Versión de la app: <span id="aj-version">—</span></p>`;
 MONTAR.ajustes = () => {
   if (typeof caches !== 'undefined' && caches && caches.keys) caches.keys().then(ks => { $('#aj-version').textContent = ks.find(k => k.startsWith('el-gallinero-')) || 'sin caché'; }).catch(() => {});
@@ -911,6 +1436,21 @@ MONTAR.ajustes = () => {
     const m = leerNum($('#aj-margen').value), a = leerNum($('#aj-alerta').value), v = leerNum($('#aj-vida').value);
     if (!(enRango(m) && m <= 500) || !(Number.isInteger(a) && enRango(a)) || !(Number.isInteger(v) && v >= 1 && v <= 365)) return aviso('Revisa los valores', true);
     aplicar(() => { config.margen = m; config.alerta = a; config.vidaUtil = v; }, 'Ajustes guardados');
+  });
+  $('#f-neg').addEventListener('submit', e => {
+    e.preventDefault();
+    const prefijo = $('#ng-prefijo').value.trim(), consec = leerNum($('#ng-consec').value);
+    if (!/^[A-Za-z0-9]{0,6}$/.test(prefijo)) return aviso('El prefijo solo admite hasta 6 letras o números', true);
+    if (!(Number.isInteger(consec) && consec >= 1 && consec <= MAX_NUMERO)) return aviso('El próximo número debe ser un entero desde 1', true);
+    const minimo = mayorNumero() + 1;
+    if (consec < minimo) return aviso(`Ya se emitió el comprobante ${numeroTxt(minimo - 1)}: el próximo número debe ser ${minimo} o más (mínimo ${minimo}).`, true);
+    const prefC = $('#ng-prefijo-c').value.trim(), consecC = leerNum($('#ng-consec-c').value);
+    if (!/^[A-Za-z0-9]{0,6}$/.test(prefC)) return aviso('El prefijo de compras solo admite hasta 6 letras o números', true);
+    if (!(Number.isInteger(consecC) && consecC >= 1 && consecC <= MAX_NUMERO)) return aviso('El próximo número de compra debe ser un entero desde 1', true);
+    const minimoC = mayorNumeroCompra() + 1;
+    if (consecC < minimoC) return aviso(`Ya se emitió el comprobante de compra ${numeroTxtCompra(minimoC - 1)}: el próximo número debe ser ${minimoC} o más.`, true);
+    const t = (id, max) => $(id).value.trim().slice(0, max);
+    aplicar(() => { config.negocio = { nombre: t('#ng-nombre', 100) || 'El Gallinero', nit: t('#ng-nit', 30), direccion: t('#ng-dir', 150), telefono: t('#ng-tel', 30), ciudad: t('#ng-ciudad', 60), prefijo: prefijo.toUpperCase(), prefijoCompra: prefC.toUpperCase() }; config.consecutivoCompra = consecC; config.consecutivo = consec; }, 'Datos del negocio guardados');
   });
 };
 
@@ -1123,14 +1663,23 @@ MONTAR.sheets = () => {
 function recalcularCosto(p, lista) {
   const ls = lista.filter(x => x.productoId === p.id).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
   let st = 0, costo = 0;
-  for (const x of ls) { const nuevo = st + x.cantidad; costo = nuevo > 0 ? Math.round(((st * costo) + (x.cantidad * x.costoUnitario)) / nuevo * 100) / 100 : x.costoUnitario; st = nuevo; }
+  for (const x of ls) { const nuevo = st + x.cantidad; costo = nuevo > 0 ? Math.round(((st * costo) + (x.cantidad * x.costoUnitario)) / nuevo * 10000) / 10000 : x.costoUnitario; st = nuevo; }
   p.cost = costo; p.lastCost = ls.length ? ls[ls.length - 1].costoUnitario : 0;
 }
 const ACCIONES = {
   ir: el => navegar(el.dataset.v),
   cerrar: () => cerrarHoja(),
   paso: el => { const i = $('#' + el.dataset.t); i.value = Math.max(1, (parseInt(i.value, 10) || 0) + parseInt(el.dataset.d, 10)); i.dispatchEvent(new Event('input', { bubbles: true })); },
+  'graf-tipo': el => { grafTipo = el.dataset.t; repintar(); },
+  comprobante: el => abrirComprobante(Number(el.dataset.id)),
+  'comprobante-compra': el => abrirComprobanteCompra(Number(el.dataset.id)),
+  'imprimir-doc': el => { const id = el && el.dataset ? Number(el.dataset.id) : NaN; if (id && el.dataset.tipo === 'compra') imprimirComprobanteCompra(id); else if (id) imprimirComprobante(id); else imprimirDocumento(); },
   'cliente-nuevo': el => formCliente(null, el.dataset.vuelta),
+  'proveedor-nuevo': el => formProveedor(null, el.dataset.vuelta),
+  'proveedor-ver': el => verProveedor(el.dataset.id),
+  'proveedor-editar': el => formProveedor(proveedor(el.dataset.id)),
+  'pagar-proveedor': el => formPagoProveedor({ proveedorId: el.dataset.prov, entradaId: el.dataset.entrada ? Number(el.dataset.entrada) : null }),
+  'pagar-compra-completa': el => pagarCompraCompleta(Number(el.dataset.id)),
   'cliente-ver': el => verCliente(el.dataset.id),
   'cliente-editar': el => formCliente(cliente(el.dataset.id)),
   'cliente-wa': el => whatsapp(el.dataset.id),
@@ -1144,15 +1693,20 @@ const ACCIONES = {
     const v = ventas.find(x => x.id === Number(el.dataset.id)); if (!v) return;
     const abonado = v.tipoPago === 'credito' ? (v.pagado || 0) : 0;
     const aviso_ab = abonado > 0 ? ` ATENCIÓN: esta venta ya tiene ${money(abonado)} abonados. Al anularla ese dinero deja de contar como cobrado: si ya lo recibiste, devuélvelo o anótalo aparte.` : '';
-    if (!(await confirmar({ titulo: 'Anular venta', texto: `Se borra la venta de ${num(v.cantidad)} y las existencias vuelven a la bodega.${aviso_ab} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
-    aplicar(() => { const p = prod(v.productoId); if (p) p.stock += (v.descontado ?? v.cantidad); ventas = ventas.filter(x => x.id !== v.id); }, 'Venta anulada');
+    const aviso_num = v.numero ? ` Esta venta está en el comprobante ${numeroTxt(v.numero)}, que ya se pudo imprimir: ese comprobante cambiará (el número no se reutiliza y quedará una nota de venta anulada).` : '';
+    if (!(await confirmar({ titulo: 'Anular venta', texto: `Se borra la venta de ${num(v.cantidad)} y las existencias vuelven a la bodega.${aviso_ab}${aviso_num} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    aplicar(() => {
+      const p = prod(v.productoId); if (p) p.stock += (v.descontado ?? v.cantidad);
+      if (v.numero) { const c = cliente(v.clienteId); config.anulados = [...config.anulados, { numero: v.numero, fecha: v.fecha, cliente: c ? c.nombre.slice(0, 100) : '', total: v.total }].slice(-MAX_ANULADOS); }
+      ventas = ventas.filter(x => x.id !== v.id);
+    }, 'Venta anulada');
     repintar();
   },
   'entrada-anular': async el => {
     const e = entradas.find(x => x.id === Number(el.dataset.id)); if (!e) return;
     const p0 = prod(e.productoId);
     if (p0 && p0.stock < e.cantidad) return aviso(`No se puede anular: ya se vendió parte de esta entrada (en bodega quedan ${num(p0.stock)} de ${num(e.cantidad)}).`, true);
-    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega. ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega.${e.proveedorId && (e.pagado ?? 0) > 0 ? ` Ya se habían pagado ${money(e.pagado)} al proveedor: ese dinero queda como saldo a favor tuyo con ese proveedor.` : ''}${e.numero ? ` Esta compra está en el comprobante ${numeroTxtCompra(e.numero)}, que ya se pudo imprimir: ese comprobante cambiará (el número no se reutiliza y quedará una nota de compra anulada).` : ''} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
     aplicar(() => {
       const p = prod(e.productoId), resto = entradas.filter(x => x.id !== e.id);
       if (p) {
@@ -1161,6 +1715,9 @@ const ACCIONES = {
         if (esUltima && e.costoPrevio !== undefined) { p.cost = e.costoPrevio; p.lastCost = e.lastCostPrevio || 0; } else recalcularCosto(p, resto);
       }
       entradas = resto;
+      if (e.numero) { const pr = proveedor(e.proveedorId); config.anuladosCompra = [...config.anuladosCompra, { numero: e.numero, fecha: e.fecha, cliente: pr ? pr.nombre.slice(0, 100) : '', total: e.total }].slice(-MAX_ANULADOS); }
+      const pv = e.proveedorId && (e.pagado ?? 0) > 0 ? proveedor(e.proveedorId) : null;
+      if (pv) pv.saldoFavor = redondear((pv.saldoFavor || 0) + e.pagado); // lo ya pagado no se pierde: queda a favor del dueño
     }, 'Entrada anulada');
     repintar();
   },
@@ -1206,7 +1763,7 @@ const ACCIONES = {
   'json-import': () => $('#archivo-json').click(),
   'borrar-todo': async () => {
     if (!(await confirmar({ titulo: 'Borrar todos los datos', texto: 'Se borrarán productos, ventas, clientes y entradas de este teléfono. No se puede deshacer.', ok: 'Borrar todo', peligro: true }))) return;
-    aplicar(() => { products = clonar(PRODUCTOS_BASE); entradas = []; ventas = []; clientes = []; ajustes = []; config = configBase(); }, 'Datos borrados');
+    aplicar(() => { products = clonar(PRODUCTOS_BASE); entradas = []; ventas = []; clientes = []; ajustes = []; proveedores = []; config = configBase(); }, 'Datos borrados');
     navegar('inicio');
   },
 };
@@ -1227,6 +1784,7 @@ function mostrarActualizacion() {
 if (errorArranque) pantallaRecuperacion(errorArranque);
 else {
   sync = leerSync();
+  window.addEventListener('afterprint', () => document.body.classList.remove('imprime-doc'));
   window.addEventListener('online', () => { if (sync && sync.listo && sync.pendiente) programarSync(); });
   if (sync && sync.listo && sync.pendiente) programarSync();
   try { pintar(); if (avisoArranque) aviso(avisoArranque, true); } catch (e) { pantallaRecuperacion(e); }

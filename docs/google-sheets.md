@@ -24,9 +24,10 @@ El teléfono sigue siendo la fuente de los datos: el Sheet es un espejo. Si se c
 
 - **La URL y la clave son como una contraseña.** Quien tenga ambas puede leer y escribir los datos. No las publiques.
 - Si más adelante cambias el script, vuelve a **Implementar → Administrar implementaciones → Editar → Nueva versión**, o la app seguirá usando la versión anterior.
-- Pestañas que verás: **Inventario, Ventas, Compras, Clientes, Pérdidas**. Las pestañas `_respaldo` y `_respaldo_anterior` están ocultas y guardan la copia completa; no las borres.
+- Pestañas que verás: **Inventario, Ventas, Compras, Proveedores, Clientes, Pérdidas**. Las pestañas `_respaldo` y `_respaldo_anterior` están ocultas y guardan la copia completa; no las borres.
 - **No edites las pestañas legibles a mano:** se reescriben en cada envío. Los cambios se hacen en la app.
 - **Nada debajo de las tablas:** cada envío limpia todas las filas de la pestaña (de la 2 al final) en las columnas de la tabla. Totales o notas ponlos a la derecha o en otra pestaña.
+- **Saldo a favor de proveedores:** si anulas una compra que ya tenía pagos, lo pagado queda como «saldo a favor» del proveedor dentro de la app. Ese dato viaja en el respaldo completo (`_respaldo`), pero **no tiene columna en la pestaña Proveedores** (no se cambió el formato de las pestañas): en el Sheet solo verás la deuda.
 - Es una copia de un solo sentido (teléfono → Sheet). Si usas **dos teléfonos a la vez**, el último que envíe gana: para eso habría que construir una sincronización bidireccional.
 - **Restaurar:** en un teléfono nuevo, conecta el mismo enlace y la app ofrece traer los datos del Sheet.
 
@@ -65,13 +66,38 @@ El script solo reescribe el bloque de la tabla (las columnas de cada pestaña, d
 | Pestaña | Columnas |
 | --- | --- |
 | Inventario | Producto · Unidad · Existencias · Costo promedio · Precio de venta · Control de frescura |
-| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe |
-| Compras | Fecha · Producto · Cantidad · Panales · Costo unitario · Total · Vence · Días en granja · Notas |
-| Clientes | Cliente · Teléfono · Deuda · Notas |
+| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe · Comprobante · Costo unitario |
+| Compras | Fecha · Producto · Cantidad · Panales · Costo unitario · Total · Vence · Días en granja · Notas · Proveedor · Pagado · Debe · Comprobante |
+| Proveedores | Proveedor · Teléfono · Deuda · Notas · Saldo a favor |
+| Clientes | Cliente · Teléfono · Deuda · Notas · Documento |
 | Pérdidas | Fecha · Producto · Cantidad · Costo unitario · Motivo |
 | Importar clientes (se llena a mano) | Nombre · Teléfono · Notas / dirección |
 
+- En **Compras**, *Debe* es lo que falta por pagar al proveedor (cuentas por pagar); las compras anteriores a esta función se toman como pagadas por completo.
+- En **Compras**, *Comprobante* es el número del comprobante de compra (con su propio prefijo y consecutivo, por ejemplo `CP-000001`).
+- En **Ventas**, *Comprobante* es el número consecutivo del comprobante de venta (vacío si todavía no se ha generado uno).
+- En **Ventas**, *Costo unitario* es el costo por unidad **en el momento de la venta** (el mismo que usa la app para su ganancia). Úsalo para calcular la ganancia: el costo actual del inventario cambia con cada compra y daría otra cifra. En **Proveedores**, *Saldo a favor* es lo pagado en compras que luego se anularon.
+- La pestaña oculta `_respaldo` guarda, en la columna B, datos sueltos para paneles: **B1** fecha del último envío, **B2** nº de ventas, **B3** nº de clientes, **B4** alerta de stock bajo, **B5** margen sugerido (%) y **B6** vida útil del huevo (días). Léelos de ahí, no del JSON de la columna A: con muchos datos el JSON se parte en trozos y la configuración queda fuera del primero.
 - *Cantidad* siempre está en unidades; *Panales* solo se llena cuando la venta o la compra fue por panal.
 - Para referenciar toda una columna usa rangos abiertos (por ejemplo `Ventas!F2:F`), porque el número de filas cambia en cada envío.
 
 La plantilla se genera con `python plantilla/generar_plantilla.py` a partir de `apps-script/Code.gs`, así que siempre coincide con el script.
+
+## Paneles del Sheet (`apps-script/Paneles.gs`)
+
+[`apps-script/Paneles.gs`](../apps-script/Paneles.gs) arma los paneles con gráficos: **INICIO, FINANZAS, PANEL VENTAS, PANEL INVENTARIO, PANEL COMPRAS, PANEL PROVEEDORES, PANEL CLIENTES, PANEL PÉRDIDAS y REPORTES**, más una hoja de cálculos `_MOTOR_CALCULOS`. Los paneles se alimentan solos con cada envío de la app.
+
+1. En Apps Script, crea un archivo nuevo llamado `Paneles.gs` (al lado de `Code.gs`) y pega su contenido.
+2. Recarga el Sheet: aparece el menú **🐔 Gallinero → Reconstruir paneles**. Púlsalo (la primera vez pide permisos).
+3. Cada vez que cambies el script de la app o agregues muchos productos nuevos, vuelve a pulsar **Reconstruir paneles**: los gráficos de productos se arman con los que haya en ese momento.
+
+Cosas a saber:
+
+- **Los paneles solo leen** las pestañas de datos (Inventario, Ventas, Compras, Proveedores, Clientes, Pérdidas); no las modifican, salvo el formato de la fila de encabezados.
+- **Contrato:** leen las columnas por letra. El script de la app solo agrega columnas **al final**, así que lo que ya leían los paneles no se mueve. Una prueba automática (`tests/paneles.test.js`) verifica que `Code.gs` y `Paneles.gs` sigan de acuerdo.
+- **Ganancia:** se calcula con la columna *Costo unitario* de Ventas (el costo en el momento de la venta), igual que en la app. Con un script anterior que no traiga esa columna, usa el costo promedio actual del inventario como respaldo.
+- **Configuración:** el stock bajo, el margen y la vida útil se leen de `_respaldo!B4:B6`, que escribe `Code.gs`. Si el Sheet todavía tiene el script anterior, los paneles usan los valores por defecto (50, 25 % y 21 días) hasta que se actualice.
+- **Cuentas por pagar:** **PANEL PROVEEDORES** muestra la deuda total, la deuda por proveedor (con enlace a WhatsApp) y las compras con saldo pendiente; INICIO y REPORTES también la incluyen.
+- **Al actualizar el script de la app** (`Code.gs`): pega el contenido nuevo **conservando tu clave**, publica una **nueva versión** (Implementar → Administrar implementaciones → Editar → Nueva versión) y reconstruye los paneles. Si cambia la URL de la aplicación web, en el teléfono ve a **Más → Google Sheets → Desconectar** y conéctalo de nuevo con la URL nueva.
+- **No compartas la URL ni la clave** (por ejemplo en un chat): juntas permiten leer y escribir todos los datos. Si se filtran, cambia la clave en `Code.gs` y publica una versión nueva.
+

@@ -201,7 +201,7 @@ def hoja_instrucciones(wb, contrato, importar):
     titulo(10, "Reglas para que nada falle")
     reglas = [
         "• No cambies el nombre de las pestañas ni el orden de las columnas: la app las busca por nombre.",
-        "• No escribas a mano en las pestañas Inventario, Ventas, Compras, Clientes y Pérdidas: se reescriben en cada envío. Los cambios se hacen en la app.",
+        "• No escribas a mano en las pestañas Inventario, Ventas, Compras, Proveedores, Clientes y Pérdidas: se reescriben en cada envío. Los cambios se hacen en la app.",
         "• Sí puedes añadir columnas a la derecha de cada tabla, otras pestañas, fórmulas, gráficos y paneles: la app no los toca.",
         "• Las pestañas ocultas _respaldo y _respaldo_anterior guardan la copia completa para restaurar. No las borres.",
     ]

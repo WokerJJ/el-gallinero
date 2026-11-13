@@ -161,3 +161,114 @@ test('script · una acción desconocida responde «Acción desconocida» (la app
   const s = cargarScript({ clave: 'k' });
   assert.deepEqual(post(s, { clave: 'k', accion: 'inexistente' }), { ok: false, error: 'Acción desconocida' });
 });
+
+/* ---------- guardar_: el contenido de cada pestaña (EVA-007) ---------- */
+const prodS = { id: 'campo', name: 'Huevo de Campo', unit: 'unidades', cost: 400, price: 600, stock: 10, control: 'granja' };
+const datosS = (o = {}) => ({
+  app: 'el-gallinero', products: [prodS], clientes: [{ id: 'c1', nombre: 'Tienda Doña Rosa', telefono: '300', notas: 'Plaza', documento: '900123456' }],
+  proveedores: [{ id: 'f1', nombre: 'Finca Nueva', telefono: '311', notas: 'Antes: La Esperanza' }], ajustes: [],
+  ventas: [
+    { id: 1, productoId: 'campo', cantidad: 100, precio: 600, total: 60000, fecha: '2026-11-12', clienteId: 'c1', tipoPago: 'credito', pagado: 20000, numero: 12 },
+    { id: 2, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-11', clienteId: null, tipoPago: 'contado', pagado: 6000 },
+  ],
+  entradas: [
+    { id: 3, productoId: 'campo', cantidad: 300, costoUnitario: 400, total: 1000, fecha: '2026-11-05', proveedorId: 'f1' }, // compra antigua: sin «pagado»
+    { id: 4, productoId: 'campo', cantidad: 300, costoUnitario: 400, total: 5000, fecha: '2026-11-06', proveedorId: 'f1', pagado: 2000 },
+  ],
+  config: { negocio: { prefijo: 'CV' } },
+  ...o,
+});
+const guardarS = (datos = datosS()) => { const s = cargarScript({ clave: 'k' }); const r = plano(s.run('guardar_')(datos)); return { s, r, hoja: n => s.libro.get(n) }; };
+
+test('script · guardar_ escribe Ventas con el número de comprobante con prefijo', () => {
+  const { r, hoja } = guardarS();
+  assert.equal(r.ok, true);
+  const v = hoja('Ventas');
+  assert.deepEqual(plano(v.getRange(1, 1, 1, 11).getValues())[0].slice(-1), ['Comprobante']);
+  assert.equal(v.celda(2, 11), 'CV-000012');
+  assert.equal(v.celda(2, 7), 'Tienda Doña Rosa');
+  assert.equal(v.celda(2, 9), 20000);
+  assert.equal(v.celda(2, 10), 40000, 'Debe = total - abonado');
+  assert.equal(v.celda(3, 11), '', 'una venta sin número no lleva comprobante');
+  assert.equal(v.celda(3, 10), 0);
+});
+test('script · con el prefijo vacío el comprobante es solo el número con ceros', () => {
+  const { hoja } = guardarS(datosS({ config: { negocio: { prefijo: '' } } }));
+  assert.equal(hoja('Ventas').celda(2, 11), '000012');
+  const sin = guardarS(datosS({ config: {} }));
+  assert.equal(sin.hoja('Ventas').celda(2, 11), '000012', 'sin datos del negocio tampoco falla');
+});
+test('script · una compra antigua sin «pagado» sale pagada por completo y sin deuda', () => {
+  const c = guardarS().hoja('Compras');
+  assert.equal(c.celda(3, 1), '2026-11-05');
+  assert.equal(c.celda(3, 11), 1000, 'Pagado = Total');
+  assert.equal(c.celda(3, 12), 0, 'Debe = 0');
+});
+test('script · una compra con proveedor y deuda muestra lo pagado y lo que falta', () => {
+  const c = guardarS().hoja('Compras');
+  assert.equal(c.celda(2, 6), 5000);
+  assert.equal(c.celda(2, 11), 2000);
+  assert.equal(c.celda(2, 12), 3000);
+});
+test('script · un proveedor renombrado aparece con el nombre actual en Compras y Proveedores (con su deuda)', () => {
+  const { hoja } = guardarS();
+  assert.equal(hoja('Compras').celda(2, 10), 'Finca Nueva');
+  assert.equal(hoja('Compras').celda(3, 10), 'Finca Nueva');
+  const p = hoja('Proveedores');
+  assert.equal(p.celda(2, 1), 'Finca Nueva');
+  assert.equal(p.celda(2, 3), 3000, 'Deuda');
+  assert.equal(p.celda(2, 4), 'Antes: La Esperanza');
+});
+test('script · Clientes incluye el documento y la deuda', () => {
+  const c = guardarS().hoja('Clientes');
+  assert.equal(c.celda(1, 5), 'Documento');
+  assert.equal(c.celda(2, 5), '900123456');
+  assert.equal(c.celda(2, 3), 40000);
+  const sin = guardarS(datosS({ clientes: [{ id: 'c1', nombre: 'Ana' }] })).hoja('Clientes');
+  assert.equal(sin.celda(2, 5), '', 'un cliente anterior sin documento deja la celda vacía');
+});
+
+/* ---------- configuración en celdas propias, costo al vender y saldo a favor ---------- */
+test('script · guardar_ escribe la configuración de la app en _respaldo!B4:B6 (alerta, margen y vida útil)', () => {
+  const { hoja } = guardarS(datosS({ config: { negocio: { prefijo: 'CV' }, alerta: 80, margen: 30, vidaUtil: 18 } }));
+  const r = hoja('_respaldo');
+  assert.equal(r.celda(4, 2), 80);
+  assert.equal(r.celda(5, 2), 30);
+  assert.equal(r.celda(6, 2), 18);
+  assert.equal(r.celda(2, 2), 2, 'B2 sigue siendo el número de ventas');
+});
+test('script · sin configuración usa los valores por defecto de la app (50, 25 y 21)', () => {
+  const r = guardarS(datosS({ config: {} })).hoja('_respaldo');
+  assert.deepEqual([r.celda(4, 2), r.celda(5, 2), r.celda(6, 2)], [50, 25, 21]);
+  const raro = guardarS(datosS({ config: { alerta: 'x', margen: -5 } })).hoja('_respaldo');
+  assert.deepEqual([raro.celda(4, 2), raro.celda(5, 2)], [50, 25], 'un valor inválido no se escribe');
+});
+test('script · la configuración sigue disponible aunque el respaldo se parta en varios trozos', () => {
+  const muchas = Array.from({ length: 900 }, (_, i) => ({ id: 100 + i, productoId: 'campo', cantidad: 1, precio: 600, total: 600, costoUnitario: 400, fecha: '2026-11-10', clienteId: null, tipoPago: 'contado', pagado: 600 }));
+  const { hoja } = guardarS(datosS({ ventas: muchas, config: { negocio: { prefijo: 'CV' }, alerta: 77, margen: 33, vidaUtil: 19 } }));
+  const r = hoja('_respaldo');
+  assert.ok(r.getLastRow() > 1, 'el JSON ocupa varias celdas de la columna A');
+  const A1 = r.celda(1, 1);
+  assert.ok(!/"alerta":77/.test(A1), 'en el primer trozo ya no está la configuración (por eso va en celdas propias)');
+  assert.equal(r.celda(4, 2), 77);
+});
+test('script · Ventas lleva el costo unitario de cada venta en el momento de venderla', () => {
+  const { hoja } = guardarS(datosS({ ventas: [
+    { id: 1, productoId: 'campo', cantidad: 100, precio: 600, total: 60000, fecha: '2026-11-12', clienteId: null, tipoPago: 'contado', pagado: 60000, costoUnitario: 421.5 },
+    { id: 2, productoId: 'borrado', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-11', clienteId: null, tipoPago: 'contado', pagado: 6000, costoUnitario: 380 },
+    { id: 3, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-10', clienteId: null, tipoPago: 'contado', pagado: 6000 },
+  ] }));
+  const v = hoja('Ventas');
+  assert.equal(v.celda(1, 12), 'Costo unitario');
+  assert.equal(v.celda(2, 12), 421.5);
+  assert.equal(v.celda(3, 12), 380, 'aunque el producto se haya borrado, el costo de la venta se conserva');
+  assert.equal(v.celda(4, 12), 0, 'una venta anterior sin costo guardado sale en 0');
+});
+test('script · Proveedores incluye el saldo a favor', () => {
+  const { hoja } = guardarS(datosS({ proveedores: [{ id: 'f1', nombre: 'Finca Nueva', telefono: '311', notas: '', saldoFavor: 15000 }] }));
+  const p = hoja('Proveedores');
+  assert.equal(p.celda(1, 5), 'Saldo a favor');
+  assert.equal(p.celda(2, 5), 15000);
+  const sin = guardarS().hoja('Proveedores');
+  assert.equal(sin.celda(2, 5), 0, 'un proveedor sin saldo a favor deja 0');
+});
