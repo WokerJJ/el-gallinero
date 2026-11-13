@@ -27,6 +27,7 @@ El teléfono sigue siendo la fuente de los datos: el Sheet es un espejo. Si se c
 - Pestañas que verás: **Inventario, Ventas, Compras, Proveedores, Clientes, Pérdidas**. Las pestañas `_respaldo` y `_respaldo_anterior` están ocultas y guardan la copia completa; no las borres.
 - **No edites las pestañas legibles a mano:** se reescriben en cada envío. Los cambios se hacen en la app.
 - **Nada debajo de las tablas:** cada envío limpia todas las filas de la pestaña (de la 2 al final) en las columnas de la tabla. Totales o notas ponlos a la derecha o en otra pestaña.
+- **Saldo a favor de proveedores:** si anulas una compra que ya tenía pagos, lo pagado queda como «saldo a favor» del proveedor dentro de la app. Ese dato viaja en el respaldo completo (`_respaldo`), pero **no tiene columna en la pestaña Proveedores** (no se cambió el formato de las pestañas): en el Sheet solo verás la deuda.
 - Es una copia de un solo sentido (teléfono → Sheet). Si usas **dos teléfonos a la vez**, el último que envíe gana: para eso habría que construir una sincronización bidireccional.
 - **Restaurar:** en un teléfono nuevo, conecta el mismo enlace y la app ofrece traer los datos del Sheet.
 

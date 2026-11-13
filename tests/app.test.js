@@ -65,7 +65,7 @@ test('EVA-010 · un respaldo válido se normaliza, conserva el estado previo en 
   assert.equal(e.products[0].stock, 3);
   assert.equal(e.config.margen, 30);
   assert.equal(e.config.alerta, 50);
-  assert.equal(e.config.schemaVersion, 3);
+  assert.equal(e.config.schemaVersion, 4);
   const prev = JSON.parse(a.store.get('eg_prev'));
   assert.equal(prev.products[0].stock, 7);
 });

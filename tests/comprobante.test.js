@@ -7,7 +7,8 @@ let seq = 1700000000000100;
 const venta = (o = {}) => ({ id: seq++, productoId: 'campo', cantidad: 100, descontado: 100, precio: 600, total: 60000, costoUnitario: 400, ganancia: 20000, fecha: '2026-11-10', clienteId: null, tipoPago: 'contado', pagado: 60000, abonos: [], ...o });
 const cli = (o = {}) => ({ id: 'c1', nombre: 'Tienda Doña Rosa', telefono: '3001234567', notas: 'Plaza de mercado', documento: '900123456', ...o });
 const negocio = { nombre: 'Distribuidora El Gallinero', nit: '1.234.567-8', direccion: 'Cra 5 # 10-20', ciudad: 'Roldanillo', telefono: '3100000000', prefijo: 'CV' };
-const abrir = (a, id) => a.run(`abrirComprobante(${id})`);
+// Abrir muestra un borrador; el número se asigna al imprimir. Este ayudante abre e imprime.
+const abrir = (a, id) => { a.run('window.print = () => {}'); a.run(`abrirComprobante(${id})`); a.run(`ACCIONES['imprimir-doc']({ dataset: { id: '${id}' } })`); };
 
 test('comprobante · el número lleva prefijo y ceros a la izquierda', () => {
   const a = cargarApp({ seed: sembrar({ config: { negocio: { ...negocio, prefijo: 'cv' } } }) });
@@ -26,7 +27,7 @@ test('comprobante · las ventas del mismo cliente y día salen juntas con un sol
   assert.equal(a.run('config.consecutivo'), 2);
 });
 
-test('comprobante · abrir el mismo comprobante dos veces no consume otro número', () => {
+test('comprobante · imprimir el mismo comprobante dos veces no consume otro número', () => {
   const v = venta({ clienteId: 'c1' });
   const a = cargarApp({ seed: sembrar({ clientes: [cli()], ventas: [v], config: { negocio } }) });
   abrir(a, v.id); abrir(a, v.id); abrir(a, v.id);

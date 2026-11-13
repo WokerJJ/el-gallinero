@@ -25,6 +25,9 @@ const verFecha = s => { if (!s) return ''; if (typeof s !== 'string' || !FECHA_R
 const TOPE = 1e9;
 const leerNum = s => (String(s ?? '').trim() === '' ? NaN : Number(s));
 const enRango = (n, min = 0) => Number.isFinite(n) && n >= min && n <= TOPE;
+// Dinero a centavos: lo que se suma o resta (abonos, pagos, totales) se redondea para que 0,1 + 0,2 no deje residuos.
+const redondear = x => Math.round(x * 100) / 100;
+const aCero = d => (d < 0.005 ? 0 : d); // una deuda menor a medio centavo es ruido de redondeo, no una deuda
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 /* =============== Datos =============== */
@@ -41,12 +44,13 @@ const CONTROLES = ['granja', 'vencimiento', 'ninguno'];
 const rPanal = r => (r.panal == null ? (controlDe(r) === 'granja' ? 30 : 0) : Number.isInteger(r.panal) && r.panal >= 0 && r.panal <= 1000 ? r.panal : mal());
 const controlDe = r => (CONTROLES.includes(r.control) ? r.control : (r.isEgg ? 'granja' : (['leche', 'queso', 'arepa'].includes(r.id) ? 'vencimiento' : 'ninguno'))); // datos de la versión anterior: los lácteos y la arepa son empacados
 
-const SCHEMA = 3;
+// SCHEMA 4: config.anulados (rastro de comprobantes con ventas anuladas) y saldoFavor de proveedores.
+const SCHEMA = 4;
 const CLAVE_DB = 'eg_db', CLAVE_PREV = 'eg_prev';
 // Claves de la versión anterior (una por colección): solo se LEEN, para migrar al guardado único eg_db.
 const CLAVES = { products: 'eg_products', entradas: 'eg_entradas', ventas: 'eg_ventas', clientes: 'eg_clientes', config: 'eg_config', ajustes: 'eg_ajustes' };
 const negocioBase = () => ({ nombre: 'El Gallinero', nit: '', direccion: '', telefono: '', ciudad: '', prefijo: 'CV' });
-const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, schemaVersion: SCHEMA });
+const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, anulados: [], schemaVersion: SCHEMA });
 
 let aviso_t; // se declara antes de cualquier uso: migrar() y guardar() pueden llamar a aviso() al arrancar
 let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], config = configBase();
@@ -55,18 +59,21 @@ let sync = null, syncEnCurso = false, syncTimer = null; // conexión con Google 
 
 /* ---- Validación y saneamiento: nada entra a la memoria sin pasar por aquí ---- */
 const LIM = 1e15;
+const MAX_NUMERO = 999999999; // tope del número de comprobante (el mismo del formulario de Ajustes)
+const MAX_ANULADOS = 500;
 const mal = () => { throw new Error('registro inválido'); };
 const esNum = x => Number.isFinite(x) && Math.abs(x) <= LIM;
 const rNum = (x, def) => (x == null ? (def === undefined ? mal() : def) : esNum(x) ? x : mal());
 const rTxt = (x, def = '') => (x == null ? def : typeof x === 'string' ? x : mal());
 const rSid = x => (typeof x === 'string' && x ? x : mal());
 const rId = x => (Number.isSafeInteger(x) ? x : mal());
+const numeroOk = x => Number.isSafeInteger(x) && x >= 1 && x <= MAX_NUMERO;
 const fechaOk = s => typeof s === 'string' && FECHA_RE.test(s) && isoDe(fechaDe(s)) === s;
 const rFecha = x => (fechaOk(x) ? x : mal());
 const SANEAR = {
   products: r => ({ id: rSid(r.id), name: rTxt(r.name) || mal(), unit: rTxt(r.unit, 'unidades'), cost: rNum(r.cost, 0), price: rNum(r.price, 0), stock: rNum(r.stock, 0), lastCost: rNum(r.lastCost, 0), control: controlDe(r), panal: rPanal(r) }),
   clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas), documento: rTxt(r.documento).slice(0, 30) }),
-  proveedores: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }),
+  proveedores: r => { const o = { id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }, sf = rNum(r.saldoFavor, 0); if (sf > 0) o.saldoFavor = redondear(sf); return o; }, // saldoFavor: lo pagado en compras anuladas
   entradas: r => {
     const cantidad = rNum(r.cantidad), costoUnitario = rNum(r.costoUnitario, 0);
     const o = { id: rId(r.id), productoId: rSid(r.productoId), cantidad, costoUnitario, total: rNum(r.total, cantidad * costoUnitario), fecha: rFecha(r.fecha), diasGranja: rNum(r.diasGranja, 0), notas: rTxt(r.notas) };
@@ -75,8 +82,10 @@ const SANEAR = {
     if (r.costoPrevio != null) o.costoPrevio = rNum(r.costoPrevio);
     if (r.lastCostPrevio != null) o.lastCostPrevio = rNum(r.lastCostPrevio);
     if (r.proveedorId != null && r.proveedorId !== '') o.proveedorId = rSid(r.proveedorId);
-    o.pagado = rNum(r.pagado, o.total);
-    o.abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })) : mal();
+    // Criterio: lo pagado nunca es negativo ni supera el total (un respaldo dañado no puede inventar saldo a favor ni deuda
+    // negativa), y un abono de monto cero o negativo no es un pago: se descarta. Un monto que no es número invalida el registro.
+    o.pagado = Math.max(0, Math.min(o.total, rNum(r.pagado, o.total)));
+    o.abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })).filter(a => a.monto > 0) : mal();
     return o;
   },
   ajustes: r => ({ id: rId(r.id), productoId: rSid(r.productoId), cantidad: rNum(r.cantidad), costoUnitario: rNum(r.costoUnitario, 0), fecha: rFecha(r.fecha), motivo: rTxt(r.motivo) }),
@@ -84,14 +93,23 @@ const SANEAR = {
     const cantidad = rNum(r.cantidad), precio = rNum(r.precio), costoUnitario = rNum(r.costoUnitario, 0), total = rNum(r.total, cantidad * precio);
     const tipoPago = r.tipoPago == null ? 'contado' : (r.tipoPago === 'contado' || r.tipoPago === 'credito' ? r.tipoPago : mal());
     const abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })) : mal();
-    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(r.numero != null ? { numero: rId(r.numero) } : {}) };
+    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(numeroOk(r.numero) ? { numero: r.numero } : {}) };
   },
 };
 function sanearConfig(c) {
   c = c && typeof c === 'object' && !Array.isArray(c) ? c : {};
   const n = (x, def, min, max) => { const v = x == null || x === '' ? NaN : Number(x); return Number.isFinite(v) && v >= min && v <= max ? v : def; };
   const base = configBase();
-  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: Number.isSafeInteger(c.consecutivo) && c.consecutivo >= 1 ? c.consecutivo : 1, schemaVersion: SCHEMA };
+  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: numeroOk(c.consecutivo) ? c.consecutivo : 1, anulados: sanearAnulados(c.anulados), schemaVersion: SCHEMA };
+}
+// Rastro de las ventas anuladas que ya tenían número de comprobante: {numero, fecha, cliente, total}. Se conservan las últimas 500.
+function sanearAnulados(l) {
+  if (!Array.isArray(l)) return [];
+  const ok = [];
+  for (const a of l) {
+    if (a && typeof a === 'object' && numeroOk(a.numero) && fechaOk(a.fecha) && esNum(a.total)) ok.push({ numero: a.numero, fecha: a.fecha, cliente: typeof a.cliente === 'string' ? a.cliente.slice(0, 100) : '', total: a.total });
+  }
+  return ok.slice(-MAX_ANULADOS);
 }
 function sanearNegocio(n) {
   n = n && typeof n === 'object' && !Array.isArray(n) ? n : {};
@@ -112,7 +130,14 @@ function limpiar(crudo) {
     });
   }
   datos.config = sanearConfig(d.config);
-  return { datos, errores };
+  // El consecutivo nunca puede quedar por debajo del mayor número ya emitido (ventas o anuladas): evita repetir números.
+  const mayor = Math.max(0, ...datos.ventas.map(v => v.numero || 0), ...datos.config.anulados.map(a => a.numero));
+  datos.config.consecutivo = Math.min(MAX_NUMERO, Math.max(datos.config.consecutivo, mayor + 1));
+  // Una compra cuyo proveedor no existe (respaldo dañado o editado) dejaría una deuda invisible: se recrea el proveedor.
+  const conocidos = new Set(datos.proveedores.map(p => p.id));
+  const faltan = [...new Set(datos.entradas.map(e => e.proveedorId).filter(id => id && !conocidos.has(id)))];
+  faltan.forEach(id => datos.proveedores.push({ id, nombre: 'Proveedor sin nombre', telefono: '', notas: 'Recuperado de un respaldo' }));
+  return { datos, errores, recuperados: faltan.length };
 }
 // Migración: la versión anterior guardaba las pérdidas como entradas con cantidad negativa.
 function migrar(d) {
@@ -157,14 +182,17 @@ function cargarEstado() {
     crudo = {};
     for (const k of Object.keys(CLAVES)) { const raw = localStorage.getItem(CLAVES[k]); crudo[k] = raw === null ? null : JSON.parse(raw); }
   }
-  const { datos, errores } = limpiar(crudo);
-  if (errores.length) {
+  const { datos, errores, recuperados } = limpiar(crudo);
+  const nueva = !!(crudo.config && typeof crudo.config === 'object' && crudo.config.schemaVersion > SCHEMA);
+  if (errores.length || nueva) {
     try { localStorage.setItem(CLAVE_PREV, rawDb ?? JSON.stringify(crudo)); } catch { /* sin espacio: se avisa igual */ }
-    avisoArranque = `Se descartaron ${errores.length} registro(s) dañado(s). La copia original quedó en eg_prev.`;
+    avisoArranque = errores.length ? `Se descartaron ${errores.length} registro(s) dañado(s). La copia original quedó en eg_prev.` : '';
   }
+  if (nueva) avisoArranque += `${avisoArranque ? ' ' : ''}Estos datos se guardaron con una versión más nueva de la app: actualiza la app para no perder información (hay una copia en eg_prev).`;
+  if (recuperados) avisoArranque += `${avisoArranque ? ' ' : ''}Se recuperaron ${recuperados} proveedor(es) sin nombre: ponles nombre en Proveedores.`;
   const migrado = migrar(datos);
   poner(datos);
-  return rawDb === null || migrado;
+  return rawDb === null || migrado || recuperados > 0;
 }
 
 function pantallaRecuperacion(err) {
@@ -188,7 +216,7 @@ const cliente = id => clientes.find(c => c.id === id);
 const nuevoId = () => Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
 /* =============== Cálculos del negocio =============== */
-const debeVenta = v => (v.tipoPago === 'credito' ? Math.max(0, v.total - (v.pagado || 0)) : 0);
+const debeVenta = v => (v.tipoPago === 'credito' ? aCero(redondear(v.total - (v.pagado || 0))) : 0);
 const deudaCliente = id => ventas.filter(v => v.clienteId === id).reduce((s, v) => s + debeVenta(v), 0);
 const deudaTotal = () => ventas.reduce((s, v) => s + (v.clienteId ? debeVenta(v) : 0), 0);
 const costoVenta = v => (v.costoUnitario || 0) * v.cantidad;
@@ -276,8 +304,12 @@ function aviso(msg, error = false) {
   aviso_t = setTimeout(() => t.remove(), error ? 4000 : 2200);
 }
 
+const FOCABLES = 'a[href],button,input:not([type=hidden]),select,textarea,[tabindex]:not([tabindex="-1"])';
+let focoPrevio = null; // lo que tenía el foco al abrir el primer diálogo: ahí vuelve al cerrar
 function hoja(titulo, cuerpo, montar) {
-  cerrarHoja();
+  const origen = $('.sheet-wrap') ? focoPrevio : document.activeElement; // un diálogo que reemplaza a otro conserva el origen
+  cerrarHoja(false);
+  focoPrevio = origen || null;
   const w = document.createElement('div');
   w.className = 'sheet-wrap';
   w.innerHTML = `<div class="sheet-back" data-act="cerrar"></div>
@@ -288,13 +320,27 @@ function hoja(titulo, cuerpo, montar) {
   document.body.classList.add('no-scroll');
   const cuerpoEl = $('.sheet-body', w);
   if (montar) montar(cuerpoEl);
+  // El foco entra siempre al diálogo (lectores de pantalla y teclado). Con ratón se va al primer campo; en el teléfono se queda
+  // en el contenedor para no abrir el teclado solo.
+  const dialogo = $('.sheet', w);
+  dialogo.setAttribute('tabindex', '-1');
   const primero = $('input:not([type=hidden]),select,textarea', cuerpoEl);
-  if (primero && matchMedia('(pointer:fine)').matches) primero.focus();
+  if (primero && matchMedia('(pointer:fine)').matches) primero.focus(); else dialogo.focus();
+  // Tab y Mayús+Tab dan la vuelta dentro del diálogo en vez de salir a la página de atrás.
+  w.addEventListener('keydown', e => {
+    if (e.key !== 'Tab') return;
+    const f = [...w.querySelectorAll(FOCABLES)].filter(x => !x.disabled && !x.closest('[hidden]'));
+    if (!f.length) { e.preventDefault(); dialogo.focus(); return; }
+    const act = document.activeElement, ini = f[0], fin = f[f.length - 1];
+    if (e.shiftKey && (act === ini || act === dialogo)) { e.preventDefault(); fin.focus(); }
+    else if (!e.shiftKey && act === fin) { e.preventDefault(); ini.focus(); }
+  });
 }
 let confirmacionAbierta = null; // resolver de la confirmación en pantalla: si se cierra de otra forma, resuelve false
-function cerrarHoja() {
+function cerrarHoja(devolverFoco = true) {
   const w = $('.sheet-wrap'); if (w) w.remove(); document.body.classList.remove('no-scroll');
   if (confirmacionAbierta) { const r = confirmacionAbierta; confirmacionAbierta = null; r(false); }
+  if (w && devolverFoco && focoPrevio) { const f = focoPrevio; focoPrevio = null; if (f.isConnected !== false && f.focus) f.focus(); }
 }
 /* Evita guardar dos veces lo mismo por un doble toque: tras un envío, el formulario ignora otro durante un instante. */
 document.addEventListener('submit', e => {
@@ -500,12 +546,12 @@ MONTAR.vender = () => {
     const abonoIn = tipoPago === 'credito' && abonoTxt !== '' ? leerNum(abonoTxt) : 0;
     if (!enRango(abonoIn)) return aviso('El abono no es válido', true);
     if (p.stock < cantidad && !(await confirmar({ titulo: 'Stock insuficiente', texto: `Solo hay ${num(p.stock)} ${p.unit} de ${p.name}. ¿Registrar la venta igual?`, ok: 'Sí, registrar' }))) return;
-    const total = n * precioIn, precio = total / cantidad; // el total es exacto aunque el precio por unidad no lo sea
+    const total = redondear(n * precioIn), precio = total / cantidad; // el total es exacto (a centavos) aunque el precio por unidad no lo sea
     aplicar(() => {
       const descontado = Math.min(p.stock, cantidad);
       p.stock -= descontado;
       let pagado = total; const abonos = [];
-      if (tipoPago === 'credito') { const ab = Math.min(abonoIn, total); pagado = ab; if (ab > 0) abonos.push({ fecha, monto: ab }); }
+      if (tipoPago === 'credito') { const ab = Math.min(redondear(abonoIn), total); pagado = ab; if (ab > 0) abonos.push({ fecha, monto: ab }); }
       ventas.push({ id: nuevoId(), productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos, ...(enPanal ? { panales: n, precioPanal: precioIn } : {}) });
     }, `Venta guardada · ${money(total)}`);
     memoVenta = { productoId: p.id, clienteId: clienteId || '', pago: tipoPago };
@@ -603,7 +649,7 @@ MONTAR.comprar = () => {
     const vence = p.control === 'vencimiento' ? $('#e-vence').value : '';
     if (!(Number.isInteger(n) && enRango(n, 1) && enRango(cantidad, 1))) return aviso(enPanal ? 'Los panales deben ser un número entero mayor que cero' : 'La cantidad debe ser un número entero mayor que cero', true);
     if (!enRango(costoIn)) return aviso(`Escribe el costo por ${enPanal ? 'panal' : 'unidad'} (un número razonable)`, true);
-    const total = n * costoIn, costo = total / cantidad; // el total es exacto aunque el costo por unidad no lo sea
+    const total = redondear(n * costoIn), costo = Math.round(total / cantidad * 10000) / 10000; // el total es exacto; el costo por unidad lleva 4 decimales (30 huevos de un panal de 14.333,33 no caben en 2)
     if (!fechaOk(fecha)) return aviso('Falta la fecha', true);
     if (p.control === 'vencimiento' && !fechaOk(vence)) return aviso('Escribe la fecha de vencimiento', true);
     if (vence && vence < fecha) return aviso('La fecha de vencimiento es anterior a la llegada', true);
@@ -612,7 +658,7 @@ MONTAR.comprar = () => {
     let pagado = total; const abonos = [];
     if (parcial) {
       if (!proveedorId) return aviso('Si queda debiendo, elige a quién (o crea el proveedor con +)', true);
-      const txt = String($('#e-pagado').value ?? '').trim(), hoyPaga = txt === '' ? 0 : leerNum(txt);
+      const txt = String($('#e-pagado').value ?? '').trim(), hoyPaga = txt === '' ? 0 : redondear(leerNum(txt));
       if (!enRango(hoyPaga)) return aviso('El valor pagado no es válido', true);
       if (hoyPaga >= total) return aviso('Pagaste todo: elige «Pagué todo»', true);
       pagado = hoyPaga; if (hoyPaga > 0) abonos.push({ fecha, monto: hoyPaga });
@@ -620,7 +666,7 @@ MONTAR.comprar = () => {
     aplicar(() => {
       const stockPrevio = p.stock, costoPrevio = p.cost || 0, lastCostPrevio = p.lastCost || 0;
       p.stock = stockPrevio + cantidad;
-      p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 100) / 100 : costo;
+      p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 10000) / 10000 : costo;
       p.lastCost = costo;
       entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, costoPrevio, lastCostPrevio });
     }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${parcial ? ' · debes ' + money(total - pagado) : ''}`);
@@ -710,17 +756,17 @@ function formAbono({ clienteId, ventaId }) {
   hoja('Registrar abono', `
     <form id="f-abono" novalidate>
       <p class="muted" style="margin-bottom:12px">${v ? 'Abono a este pedido.' : 'Se aplica primero a los pedidos más viejos.'} Debe ${money(maximo)}.</p>
-      <label class="field"><span>Monto que abona</span><input id="ab-monto" type="number" inputmode="decimal" min="1" step="any" max="${esc(maximo)}" placeholder="0"></label>
+      <label class="field"><span>Monto que abona</span><input id="ab-monto" type="number" inputmode="decimal" min="0.01" step="any" max="${esc(maximo)}" placeholder="0"></label>
       <button class="btn btn-teal" type="submit">Guardar abono</button>
     </form>`, b => $('#f-abono', b).addEventListener('submit', e => {
     e.preventDefault();
-    let monto = leerNum($('#ab-monto', b).value);
+    let monto = redondear(leerNum($('#ab-monto', b).value));
     if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
     if (monto > maximo) monto = maximo;
     aplicar(() => {
       const objetivo = v ? ventas.filter(x => x.id === v.id) : ventas.filter(x => x.clienteId === cid && debeVenta(x) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
       let resto = monto;
-      for (const x of objetivo) { if (resto <= 0) break; const aplica = Math.min(resto, debeVenta(x)); x.pagado = (x.pagado || 0) + aplica; (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto -= aplica; }
+      for (const x of objetivo) { if (resto <= 0) break; const aplica = Math.min(resto, debeVenta(x)); x.pagado = redondear((x.pagado || 0) + aplica); (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto = redondear(resto - aplica); }
     }, `Abono de ${money(monto)} guardado`);
     cerrarHoja(); verCliente(cid); repintar();
   }));
@@ -743,7 +789,7 @@ function whatsapp(id) {
 /* =============== Proveedores y cuentas por pagar =============== */
 /* Lo que se le debe a las fincas: una compra puede pagarse en parte el día que llega y abonarse después. Es el espejo de
    «clientes que me deben», pero al revés. Las compras anteriores se consideran pagadas por completo. */
-const debeEntrada = e => Math.max(0, e.total - (e.pagado ?? e.total));
+const debeEntrada = e => aCero(redondear(e.total - (e.pagado ?? e.total)));
 const proveedor = id => proveedores.find(x => x.id === id);
 const deudaProveedor = id => entradas.reduce((s, e) => s + (e.proveedorId === id ? debeEntrada(e) : 0), 0);
 const deudaProveedores = () => entradas.reduce((s, e) => s + (e.proveedorId ? debeEntrada(e) : 0), 0);
@@ -798,6 +844,7 @@ function verProveedor(id) {
     <p class="muted">${esc(pv.telefono || 'Sin teléfono')}${pv.notas ? ' · ' + esc(pv.notas) : ''}</p>
     <div class="stats" style="margin:12px 0"><div class="stat ${d > 0 ? 'red' : 'teal'}"><div class="n">${money(d)}</div><div class="l">${d > 0 ? 'Le debes en total' : 'Estás al día'}</div></div>
       <div class="stat"><div class="n">${compras.length}</div><div class="l">Compras</div></div></div>
+    ${pv.saldoFavor > 0 ? `<p class="muted" style="margin-bottom:12px"><strong>Saldo a favor: ${money(pv.saldoFavor)}</strong> · pagado en compras anuladas</p>` : ''}
     <div class="btn-row">
       ${d > 0 ? `<button class="btn btn-teal" data-act="pagar-proveedor" data-prov="${esc(id)}">Registrar pago</button>` : ''}
       <button class="btn btn-ghost" data-act="proveedor-editar" data-id="${esc(id)}">Editar</button>
@@ -822,7 +869,7 @@ function aplicarPagoProveedor(provId, entradaId, monto) {
     for (const x of objetivo) {
       if (resto <= 0) break;
       const aplica = Math.min(resto, debeEntrada(x));
-      x.pagado = (x.pagado ?? x.total) + aplica; (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto -= aplica;
+      x.pagado = redondear((x.pagado ?? x.total) + aplica); (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto = redondear(resto - aplica);
       detalle.push({ id: x.id, fecha: x.fecha, productoId: x.productoId, aplicado: aplica, resta: debeEntrada(x), total: x.total });
     }
   }, '');
@@ -837,8 +884,9 @@ function resultadoPagoProveedor(provId, pagado, detalle) {
       <div class="stat ${falta > 0 ? 'red' : 'teal'}"><div class="n">${money(falta)}</div><div class="l">${falta > 0 ? 'Falta por pagar' : 'Estás al día'}</div></div></div>
     <p class="muted" style="margin-bottom:8px">${esc(pv ? pv.nombre : 'Proveedor')} · ${verFecha(hoy())}</p>
     ${detalle.map(d => { const p = prod(d.productoId); return `<div class="row"><div class="main"><div class="t">${verFecha(d.fecha)} · ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">Pagaste ${money(d.aplicado)} de ${money(d.total)}</div></div><div class="r"><strong class="${d.resta > 0 ? 'neg' : 'pos'}">${d.resta > 0 ? 'faltan ' + money(d.resta) : 'Pagada'}</strong></div></div>`; }).join('')}
-    <div class="btn-row"><button class="btn btn-teal" data-act="imprimir-doc">Imprimir comprobante</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div></div>
-    <div class="solo-impresion">${comprobantePagoHTML(provId, pagado, detalle)}</div>`);
+    </div>
+    ${comprobantePagoHTML(provId, pagado, detalle)}
+    <div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc">Imprimir comprobante</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
 }
 function formPagoProveedor({ proveedorId, entradaId }) {
   const e0 = entradaId ? entradas.find(x => x.id === entradaId) : null;
@@ -847,11 +895,11 @@ function formPagoProveedor({ proveedorId, entradaId }) {
   hoja('Registrar pago', `
     <form id="f-pago-prov" novalidate>
       <p class="muted" style="margin-bottom:12px">${e0 ? 'Pago a esta compra.' : 'Se aplica primero a las compras más viejas.'} Le debes ${money(maximo)}.</p>
-      <label class="field"><span>Monto que pagas</span><input id="pp-monto" type="number" inputmode="decimal" min="1" step="any" max="${esc(maximo)}" placeholder="0"></label>
+      <label class="field"><span>Monto que pagas</span><input id="pp-monto" type="number" inputmode="decimal" min="0.01" step="any" max="${esc(maximo)}" placeholder="0"></label>
       <button class="btn btn-teal" type="submit">Guardar pago</button>
     </form>`, b => $('#f-pago-prov', b).addEventListener('submit', ev => {
     ev.preventDefault();
-    let monto = leerNum($('#pp-monto', b).value);
+    let monto = redondear(leerNum($('#pp-monto', b).value));
     if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
     if (monto > maximo) monto = maximo;
     const detalle = aplicarPagoProveedor(pid, entradaId, monto);
@@ -911,6 +959,7 @@ function graficoBarras({ titulo, etiquetas, series }) {
   const top = Math.ceil(max / paso) * paso || paso, bot = Math.floor(min / paso) * paso;
   const y = v => mt + (top - v) / (top - bot) * (H - mt - mb);
   const n = etiquetas.length, gw = (W - ml - mr) / n, bw = Math.min(28, gw * 0.78 / series.length);
+  const trama = series.length > 1; // la segunda serie lleva trama diagonal: se distingue sin depender del color
   let g = '';
   const lineas = Math.round((top - bot) / paso);
   for (let i = 0; i <= lineas; i++) { const v = bot + i * paso; g += `<line class="g-grid" x1="${ml}" x2="${W - mr}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="g-txt" x="${ml - 5}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${esc(corto(v))}</text>`; }
@@ -920,13 +969,14 @@ function graficoBarras({ titulo, etiquetas, series }) {
     series.forEach((s, k) => {
       const v = s.valores[i]; if (!v) return;
       const alto = Math.max(Math.abs(y(v) - y(0)), 1.5), yy = v >= 0 ? y(0) - alto : y(0);
-      g += `<rect class="g-bar ${v < 0 && s.neg ? 'g-neg' : 'g-s' + k}" x="${(x0 + k * bw).toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${alto.toFixed(1)}" rx="2"><title>${esc(et)} · ${esc(s.nombre)}: ${esc(money(v))}</title></rect>`;
+      g += `<rect class="g-bar ${v < 0 && s.neg ? 'g-neg' : 'g-s' + k}${trama && k === 1 ? ' g-trama' : ''}" x="${(x0 + k * bw).toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${alto.toFixed(1)}" rx="2"><title>${esc(et)} · ${esc(s.nombre)}: ${esc(money(v))}</title></rect>`;
     });
-    g += `<text class="g-txt" x="${(ml + i * gw + gw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(et)}</text>`;
+    if (gw >= 30 || (n - 1 - i) % 2 === 0) g += `<text class="g-txt" x="${(ml + i * gw + gw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(et)}</text>`; // grupos angostos: una etiqueta de cada dos, siempre la última
   });
   const tabla = `<details class="datos"><summary>Ver los números</summary><table class="tbl"><thead><tr><th>${etiquetas.length ? 'Período' : ''}</th>${series.map(s => `<th class="num">${esc(s.nombre)}</th>`).join('')}</tr></thead><tbody>${etiquetas.map((et, i) => `<tr><td>${esc(et)}</td>${series.map(s => `<td class="num">${money(s.valores[i])}</td>`).join('')}</tr>`).join('')}</tbody></table></details>`;
   const leyenda = series.length > 1 ? `<div class="leyenda">${series.map((s, k) => `<span><i class="g-s${k}"></i>${esc(s.nombre)}</span>`).join('')}</div>` : '';
-  return `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(titulo)}"><title>${esc(titulo)}</title>${g}</svg>${leyenda}${tabla}`;
+  const defs = trama ? '<defs><pattern id="g-trama" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--sun)"/><line x1="0" y1="0" x2="0" y2="6" style="stroke:var(--ink);stroke-width:2.5"/></pattern></defs>' : '';
+  return `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(titulo)}"><title>${esc(titulo)}</title>${defs}${g}</svg>${leyenda}${tabla}`;
 }
 
 VISTAS.graficos = () => {
@@ -971,14 +1021,26 @@ VISTAS.graficos = () => {
 const numeroTxt = n => { const pf = (config.negocio && config.negocio.prefijo) || ''; return `${pf}${pf ? '-' : ''}${String(n).padStart(6, '0')}`; };
 
 // Las ventas de un mismo cliente en el mismo día salen juntas en un comprobante; una vez numerado, el grupo queda fijo.
+// Un número solo agrupa ventas del MISMO cliente (dos clientes con el mismo número nunca se mezclan) y el mostrador va solo.
 function grupoComprobante(v) {
-  if (v.numero) return ventas.filter(x => x.numero === v.numero);
   if (!v.clienteId) return [v];
+  if (v.numero) return ventas.filter(x => x.numero === v.numero && x.clienteId === v.clienteId);
   return ventas.filter(x => x.clienteId === v.clienteId && x.fecha === v.fecha && !x.numero);
 }
-// Asigna el siguiente número a todo el grupo y avanza el consecutivo. Devuelve false si no se pudo guardar.
+// Mayor número emitido: de las ventas vivas y de las anuladas (un número impreso nunca se reutiliza).
+const mayorNumero = () => Math.max(0, ...ventas.map(v => v.numero || 0), ...config.anulados.map(a => a.numero));
+function siguienteNumero() {
+  const usados = new Set([...ventas.map(v => v.numero), ...config.anulados.map(a => a.numero)]);
+  let n = Math.max(1, config.consecutivo);
+  while (usados.has(n)) n++;
+  return n;
+}
+// Asigna el siguiente número libre a todo el grupo y avanza el consecutivo. Devuelve false si no se pudo guardar.
 function numerarGrupo(grupo) {
-  return aplicar(() => { const n = config.consecutivo; grupo.forEach(x => { x.numero = n; }); config.consecutivo = n + 1; }, '');
+  const n = siguienteNumero();
+  if (n > MAX_NUMERO) { aviso('Se acabaron los números de comprobante (el máximo es 999999999).', true); return false; }
+  const ids = new Set(grupo.map(x => x.id));
+  return aplicar(() => { ventas.forEach(x => { if (ids.has(x.id)) x.numero = n; }); config.consecutivo = n + 1; }, '');
 }
 function comprobanteHTML(grupo) {
   const neg = config.negocio, v0 = grupo[0], c = cliente(v0.clienteId);
@@ -989,10 +1051,12 @@ function comprobanteHTML(grupo) {
     return `<tr><td>${esc(p ? p.name : 'Producto eliminado')}${panal ? `<small> · panal de ${num(v.cantidad / v.panales)} u.</small>` : ''}</td><td class="num">${panal ? num(v.panales) + (v.panales === 1 ? ' panal' : ' panales') : num(v.cantidad) + ' ' + esc(p ? p.unit : '')}</td><td class="num">${money(panal ? v.precioPanal : v.precio)}</td><td class="num">${money(v.total)}</td></tr>`;
   }).join('');
   const linea = (t, v) => (v ? `<div>${t}${esc(v)}</div>` : '');
+  const anul = v0.numero ? config.anulados.filter(a => a.numero === v0.numero) : [];
+  const notaAnulados = anul.length ? `<p class="doc-nota doc-anulados"><strong>Este comprobante tuvo ${anul.length} ${anul.length === 1 ? 'venta anulada' : 'ventas anuladas'} por ${money(anul.reduce((s, a) => s + a.total, 0))}.</strong></p>` : '';
   return `<article class="doc">
     <header class="doc-head">
       <div class="doc-emisor"><h2>${esc(neg.nombre || 'El Gallinero')}</h2>${linea('NIT / CC: ', neg.nit)}${linea('', neg.direccion)}${linea('', [neg.ciudad, neg.telefono].filter(Boolean).join(' · '))}</div>
-      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE VENTA</div><div class="doc-n">N° ${esc(numeroTxt(v0.numero))}</div><div>Fecha: ${verFecha(v0.fecha)}</div></div>
+      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE VENTA</div><div class="doc-n">${v0.numero ? 'N° ' + esc(numeroTxt(v0.numero)) : 'Borrador · el número se asigna al imprimir'}</div><div>Fecha: ${verFecha(v0.fecha)}</div></div>
     </header>
     <section class="doc-cliente"><h3>Cliente</h3>
       <div><strong>${esc(c ? c.nombre : 'Consumidor final (mostrador)')}</strong></div>${c ? linea('Cédula / NIT: ', c.documento) + linea('Teléfono: ', c.telefono) + linea('Dirección / notas: ', c.notas) : ''}</section>
@@ -1003,7 +1067,7 @@ function comprobanteHTML(grupo) {
       ${credito ? `<div><span>Abonado</span><strong>${money(pagado)}</strong></div><div class="doc-saldo"><span>Saldo pendiente</span><strong>${money(saldo)}</strong></div>` : ''}
     </div>
     <div class="doc-firmas"><div>Entrega</div><div>Recibe</div></div>
-    <p class="doc-nota">Comprobante de venta de control interno. No es una factura electrónica de venta ni reemplaza la expedida ante la DIAN.</p>
+    ${notaAnulados}<p class="doc-nota">Comprobante de venta de control interno. No es una factura electrónica de venta ni reemplaza la expedida ante la DIAN.</p>
   </article>`;
 }
 function comprobantePagoHTML(provId, pagado, detalle) {
@@ -1018,17 +1082,25 @@ function comprobantePagoHTML(provId, pagado, detalle) {
     <div class="doc-firmas"><div>Paga</div><div>Recibe</div></div>
   </article>`;
 }
+// Abrir un comprobante NO gasta número: sin número es una vista previa (borrador). El número se asigna al imprimir.
 function abrirComprobante(id) {
   const v = ventas.find(x => x.id === id); if (!v) return;
-  if (!v.numero && !numerarGrupo(grupoComprobante(v))) return;
-  const grupo = grupoComprobante(ventas.find(x => x.id === id));
-  hoja('Comprobante de venta', `${comprobanteHTML(grupo)}<div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc">Imprimir</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
-  repintar();
+  hoja('Comprobante de venta', `${comprobanteHTML(grupoComprobante(v))}<div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc" data-id="${esc(v.id)}">Imprimir</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+}
+// Imprime un comprobante de venta: si aún no tiene número se le asigna antes (y si no se puede guardar, no se imprime).
+function imprimirComprobante(id) {
+  const v = ventas.find(x => x.id === id); if (!v) return;
+  if (!v.numero) {
+    if (!numerarGrupo(grupoComprobante(v))) return aviso('No se pudo guardar el número del comprobante, así que no se imprimió. Libera espacio e inténtalo de nuevo.', true);
+    abrirComprobante(id); repintar(); // ya con su número
+  }
+  imprimirDocumento();
 }
 function imprimirDocumento() {
   document.body.classList.add('imprime-doc');
-  window.print();
-  setTimeout(() => document.body.classList.remove('imprime-doc'), 1000); // por si el navegador no avisa al terminar
+  try { window.print(); }
+  catch { document.body.classList.remove('imprime-doc'); aviso('No se pudo abrir la impresión en este navegador', true); }
+  finally { setTimeout(() => document.body.classList.remove('imprime-doc'), 1000); } // por si el navegador no avisa al terminar
 }
 
 /* =============== Más =============== */
@@ -1200,12 +1272,13 @@ async function restaurarTexto(texto) {
   let d;
   try { d = JSON.parse(texto); } catch { return aviso('El archivo no es un respaldo válido', true); }
   if (!d || d.app !== 'el-gallinero' || !Array.isArray(d.products) || !Array.isArray(d.ventas) || !Array.isArray(d.entradas) || !Array.isArray(d.clientes)) return aviso('El archivo no es un respaldo de El Gallinero', true);
-  const { datos, errores } = limpiar(d);
+  if (Number.isFinite(d.version) && d.version > SCHEMA) return aviso('Este respaldo viene de una versión más nueva de la app: actualiza la app para poder restaurarlo.', true);
+  const { datos, errores, recuperados } = limpiar(d);
   if (errores.length) return aviso(`El respaldo tiene ${errores.length} registro(s) con datos inválidos (${errores.slice(0, 3).join(', ')}). No se restauró nada.`, true);
   migrar(datos);
   if (!(await confirmar({ titulo: 'Restaurar respaldo', texto: `Se reemplazarán TODOS los datos de este teléfono por los del respaldo (${datos.ventas.length} ventas, ${datos.clientes.length} clientes). ¿Continuar?`, ok: 'Restaurar', peligro: true }))) return;
   try { localStorage.setItem(CLAVE_PREV, JSON.stringify(estado())); } catch { return aviso('No hay espacio para guardar una copia de lo actual. No se restauró nada.', true); }
-  const ok = aplicar(() => poner(datos), 'Datos restaurados');
+  const ok = aplicar(() => poner(datos), recuperados ? `Datos restaurados. Se recuperaron ${recuperados} proveedor(es) sin nombre: ponles nombre en Proveedores.` : 'Datos restaurados');
   repintar();
   return ok;
 }
@@ -1258,7 +1331,7 @@ VISTAS.ajustes = () => `
     </div>
     <div class="row2">
       <label class="field"><span>Prefijo</span><input id="ng-prefijo" type="text" maxlength="6" value="${esc(config.negocio.prefijo)}" autocomplete="off"><div class="hint">Hasta 6 letras o números. Ej: CV</div></label>
-      <label class="field"><span>Próximo número</span><input id="ng-consec" type="number" inputmode="numeric" min="1" step="1" value="${esc(config.consecutivo)}"><div class="hint">Para seguir tu propia numeración</div></label>
+      <label class="field"><span>Próximo número</span><input id="ng-consec" type="number" inputmode="numeric" min="${esc(mayorNumero() + 1)}" step="1" value="${esc(config.consecutivo)}"><div class="hint">Para seguir tu propia numeración. No puede ser menor a lo ya emitido.</div></label>
     </div>
     <button class="btn btn-teal" type="submit">Guardar datos del negocio</button>
   </form>
@@ -1275,7 +1348,9 @@ MONTAR.ajustes = () => {
     e.preventDefault();
     const prefijo = $('#ng-prefijo').value.trim(), consec = leerNum($('#ng-consec').value);
     if (!/^[A-Za-z0-9]{0,6}$/.test(prefijo)) return aviso('El prefijo solo admite hasta 6 letras o números', true);
-    if (!(Number.isInteger(consec) && consec >= 1 && consec <= 999999999)) return aviso('El próximo número debe ser un entero desde 1', true);
+    if (!(Number.isInteger(consec) && consec >= 1 && consec <= MAX_NUMERO)) return aviso('El próximo número debe ser un entero desde 1', true);
+    const minimo = mayorNumero() + 1;
+    if (consec < minimo) return aviso(`Ya se emitió el comprobante ${numeroTxt(minimo - 1)}: el próximo número debe ser ${minimo} o más (mínimo ${minimo}).`, true);
     const t = (id, max) => $(id).value.trim().slice(0, max);
     aplicar(() => { config.negocio = { nombre: t('#ng-nombre', 100) || 'El Gallinero', nit: t('#ng-nit', 30), direccion: t('#ng-dir', 150), telefono: t('#ng-tel', 30), ciudad: t('#ng-ciudad', 60), prefijo: prefijo.toUpperCase() }; config.consecutivo = consec; }, 'Datos del negocio guardados');
   });
@@ -1490,7 +1565,7 @@ MONTAR.sheets = () => {
 function recalcularCosto(p, lista) {
   const ls = lista.filter(x => x.productoId === p.id).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
   let st = 0, costo = 0;
-  for (const x of ls) { const nuevo = st + x.cantidad; costo = nuevo > 0 ? Math.round(((st * costo) + (x.cantidad * x.costoUnitario)) / nuevo * 100) / 100 : x.costoUnitario; st = nuevo; }
+  for (const x of ls) { const nuevo = st + x.cantidad; costo = nuevo > 0 ? Math.round(((st * costo) + (x.cantidad * x.costoUnitario)) / nuevo * 10000) / 10000 : x.costoUnitario; st = nuevo; }
   p.cost = costo; p.lastCost = ls.length ? ls[ls.length - 1].costoUnitario : 0;
 }
 const ACCIONES = {
@@ -1499,7 +1574,7 @@ const ACCIONES = {
   paso: el => { const i = $('#' + el.dataset.t); i.value = Math.max(1, (parseInt(i.value, 10) || 0) + parseInt(el.dataset.d, 10)); i.dispatchEvent(new Event('input', { bubbles: true })); },
   'graf-tipo': el => { grafTipo = el.dataset.t; repintar(); },
   comprobante: el => abrirComprobante(Number(el.dataset.id)),
-  'imprimir-doc': () => imprimirDocumento(),
+  'imprimir-doc': el => { const id = el && el.dataset ? Number(el.dataset.id) : NaN; if (id) imprimirComprobante(id); else imprimirDocumento(); },
   'cliente-nuevo': el => formCliente(null, el.dataset.vuelta),
   'proveedor-nuevo': el => formProveedor(null, el.dataset.vuelta),
   'proveedor-ver': el => verProveedor(el.dataset.id),
@@ -1519,15 +1594,20 @@ const ACCIONES = {
     const v = ventas.find(x => x.id === Number(el.dataset.id)); if (!v) return;
     const abonado = v.tipoPago === 'credito' ? (v.pagado || 0) : 0;
     const aviso_ab = abonado > 0 ? ` ATENCIÓN: esta venta ya tiene ${money(abonado)} abonados. Al anularla ese dinero deja de contar como cobrado: si ya lo recibiste, devuélvelo o anótalo aparte.` : '';
-    if (!(await confirmar({ titulo: 'Anular venta', texto: `Se borra la venta de ${num(v.cantidad)} y las existencias vuelven a la bodega.${aviso_ab} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
-    aplicar(() => { const p = prod(v.productoId); if (p) p.stock += (v.descontado ?? v.cantidad); ventas = ventas.filter(x => x.id !== v.id); }, 'Venta anulada');
+    const aviso_num = v.numero ? ` Esta venta está en el comprobante ${numeroTxt(v.numero)}, que ya se pudo imprimir: ese comprobante cambiará (el número no se reutiliza y quedará una nota de venta anulada).` : '';
+    if (!(await confirmar({ titulo: 'Anular venta', texto: `Se borra la venta de ${num(v.cantidad)} y las existencias vuelven a la bodega.${aviso_ab}${aviso_num} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    aplicar(() => {
+      const p = prod(v.productoId); if (p) p.stock += (v.descontado ?? v.cantidad);
+      if (v.numero) { const c = cliente(v.clienteId); config.anulados = [...config.anulados, { numero: v.numero, fecha: v.fecha, cliente: c ? c.nombre.slice(0, 100) : '', total: v.total }].slice(-MAX_ANULADOS); }
+      ventas = ventas.filter(x => x.id !== v.id);
+    }, 'Venta anulada');
     repintar();
   },
   'entrada-anular': async el => {
     const e = entradas.find(x => x.id === Number(el.dataset.id)); if (!e) return;
     const p0 = prod(e.productoId);
     if (p0 && p0.stock < e.cantidad) return aviso(`No se puede anular: ya se vendió parte de esta entrada (en bodega quedan ${num(p0.stock)} de ${num(e.cantidad)}).`, true);
-    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega.${e.proveedorId && (e.pagado ?? 0) > 0 ? ` Ya se habían pagado ${money(e.pagado)} al proveedor: ese pago deja de contarse.` : ''} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega.${e.proveedorId && (e.pagado ?? 0) > 0 ? ` Ya se habían pagado ${money(e.pagado)} al proveedor: ese dinero queda como saldo a favor tuyo con ese proveedor.` : ''} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
     aplicar(() => {
       const p = prod(e.productoId), resto = entradas.filter(x => x.id !== e.id);
       if (p) {
@@ -1536,6 +1616,8 @@ const ACCIONES = {
         if (esUltima && e.costoPrevio !== undefined) { p.cost = e.costoPrevio; p.lastCost = e.lastCostPrevio || 0; } else recalcularCosto(p, resto);
       }
       entradas = resto;
+      const pv = e.proveedorId && (e.pagado ?? 0) > 0 ? proveedor(e.proveedorId) : null;
+      if (pv) pv.saldoFavor = redondear((pv.saldoFavor || 0) + e.pagado); // lo ya pagado no se pierde: queda a favor del dueño
     }, 'Entrada anulada');
     repintar();
   },
