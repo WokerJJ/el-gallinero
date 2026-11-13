@@ -227,3 +227,48 @@ test('script · Clientes incluye el documento y la deuda', () => {
   const sin = guardarS(datosS({ clientes: [{ id: 'c1', nombre: 'Ana' }] })).hoja('Clientes');
   assert.equal(sin.celda(2, 5), '', 'un cliente anterior sin documento deja la celda vacía');
 });
+
+/* ---------- configuración en celdas propias, costo al vender y saldo a favor ---------- */
+test('script · guardar_ escribe la configuración de la app en _respaldo!B4:B6 (alerta, margen y vida útil)', () => {
+  const { hoja } = guardarS(datosS({ config: { negocio: { prefijo: 'CV' }, alerta: 80, margen: 30, vidaUtil: 18 } }));
+  const r = hoja('_respaldo');
+  assert.equal(r.celda(4, 2), 80);
+  assert.equal(r.celda(5, 2), 30);
+  assert.equal(r.celda(6, 2), 18);
+  assert.equal(r.celda(2, 2), 2, 'B2 sigue siendo el número de ventas');
+});
+test('script · sin configuración usa los valores por defecto de la app (50, 25 y 21)', () => {
+  const r = guardarS(datosS({ config: {} })).hoja('_respaldo');
+  assert.deepEqual([r.celda(4, 2), r.celda(5, 2), r.celda(6, 2)], [50, 25, 21]);
+  const raro = guardarS(datosS({ config: { alerta: 'x', margen: -5 } })).hoja('_respaldo');
+  assert.deepEqual([raro.celda(4, 2), raro.celda(5, 2)], [50, 25], 'un valor inválido no se escribe');
+});
+test('script · la configuración sigue disponible aunque el respaldo se parta en varios trozos', () => {
+  const muchas = Array.from({ length: 900 }, (_, i) => ({ id: 100 + i, productoId: 'campo', cantidad: 1, precio: 600, total: 600, costoUnitario: 400, fecha: '2026-11-10', clienteId: null, tipoPago: 'contado', pagado: 600 }));
+  const { hoja } = guardarS(datosS({ ventas: muchas, config: { negocio: { prefijo: 'CV' }, alerta: 77, margen: 33, vidaUtil: 19 } }));
+  const r = hoja('_respaldo');
+  assert.ok(r.getLastRow() > 1, 'el JSON ocupa varias celdas de la columna A');
+  const A1 = r.celda(1, 1);
+  assert.ok(!/"alerta":77/.test(A1), 'en el primer trozo ya no está la configuración (por eso va en celdas propias)');
+  assert.equal(r.celda(4, 2), 77);
+});
+test('script · Ventas lleva el costo unitario de cada venta en el momento de venderla', () => {
+  const { hoja } = guardarS(datosS({ ventas: [
+    { id: 1, productoId: 'campo', cantidad: 100, precio: 600, total: 60000, fecha: '2026-11-12', clienteId: null, tipoPago: 'contado', pagado: 60000, costoUnitario: 421.5 },
+    { id: 2, productoId: 'borrado', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-11', clienteId: null, tipoPago: 'contado', pagado: 6000, costoUnitario: 380 },
+    { id: 3, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-10', clienteId: null, tipoPago: 'contado', pagado: 6000 },
+  ] }));
+  const v = hoja('Ventas');
+  assert.equal(v.celda(1, 12), 'Costo unitario');
+  assert.equal(v.celda(2, 12), 421.5);
+  assert.equal(v.celda(3, 12), 380, 'aunque el producto se haya borrado, el costo de la venta se conserva');
+  assert.equal(v.celda(4, 12), 0, 'una venta anterior sin costo guardado sale en 0');
+});
+test('script · Proveedores incluye el saldo a favor', () => {
+  const { hoja } = guardarS(datosS({ proveedores: [{ id: 'f1', nombre: 'Finca Nueva', telefono: '311', notas: '', saldoFavor: 15000 }] }));
+  const p = hoja('Proveedores');
+  assert.equal(p.celda(1, 5), 'Saldo a favor');
+  assert.equal(p.celda(2, 5), 15000);
+  const sin = guardarS().hoja('Proveedores');
+  assert.equal(sin.celda(2, 5), 0, 'un proveedor sin saldo a favor deja 0');
+});
