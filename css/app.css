@@ -361,3 +361,9 @@ details.datos .tbl td.num { white-space: nowrap; }
   body.imprime-doc .doc-firmas { margin-top: 40px; gap: 48px; }
   @page { margin: 14mm; }
 }
+
+/* ---------- Comprobante de compra: estado del pago ---------- */
+.doc-estado { display: inline-block; margin: 0 0 10px; padding: 4px 10px; border: 1.5px solid #000; border-radius: 4px; font-weight: 800; font-size: .8rem; letter-spacing: .03em; text-transform: uppercase; }
+.doc-estado.pend { border-width: 3px; }
+.doc-sub { margin: 12px 0 4px; }
+@media print { body.imprime-doc .doc-estado { border-color: #000; } }

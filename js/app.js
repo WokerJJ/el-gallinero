@@ -49,8 +49,8 @@ const SCHEMA = 4;
 const CLAVE_DB = 'eg_db', CLAVE_PREV = 'eg_prev';
 // Claves de la versión anterior (una por colección): solo se LEEN, para migrar al guardado único eg_db.
 const CLAVES = { products: 'eg_products', entradas: 'eg_entradas', ventas: 'eg_ventas', clientes: 'eg_clientes', config: 'eg_config', ajustes: 'eg_ajustes' };
-const negocioBase = () => ({ nombre: 'El Gallinero', nit: '', direccion: '', telefono: '', ciudad: '', prefijo: 'CV' });
-const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, anulados: [], schemaVersion: SCHEMA });
+const negocioBase = () => ({ nombre: 'El Gallinero', nit: '', direccion: '', telefono: '', ciudad: '', prefijo: 'CV', prefijoCompra: 'CP' });
+const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, anulados: [], consecutivoCompra: 1, anuladosCompra: [], schemaVersion: SCHEMA });
 
 let aviso_t; // se declara antes de cualquier uso: migrar() y guardar() pueden llamar a aviso() al arrancar
 let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], config = configBase();
@@ -86,6 +86,7 @@ const SANEAR = {
     // negativa), y un abono de monto cero o negativo no es un pago: se descarta. Un monto que no es número invalida el registro.
     o.pagado = Math.max(0, Math.min(o.total, rNum(r.pagado, o.total)));
     o.abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })).filter(a => a.monto > 0) : mal();
+    if (numeroOk(r.numero)) o.numero = r.numero; // número del comprobante de compra (fuera de rango: se descarta, la compra se conserva)
     return o;
   },
   ajustes: r => ({ id: rId(r.id), productoId: rSid(r.productoId), cantidad: rNum(r.cantidad), costoUnitario: rNum(r.costoUnitario, 0), fecha: rFecha(r.fecha), motivo: rTxt(r.motivo) }),
@@ -100,7 +101,7 @@ function sanearConfig(c) {
   c = c && typeof c === 'object' && !Array.isArray(c) ? c : {};
   const n = (x, def, min, max) => { const v = x == null || x === '' ? NaN : Number(x); return Number.isFinite(v) && v >= min && v <= max ? v : def; };
   const base = configBase();
-  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: numeroOk(c.consecutivo) ? c.consecutivo : 1, anulados: sanearAnulados(c.anulados), schemaVersion: SCHEMA };
+  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: numeroOk(c.consecutivo) ? c.consecutivo : 1, anulados: sanearAnulados(c.anulados), consecutivoCompra: numeroOk(c.consecutivoCompra) ? c.consecutivoCompra : 1, anuladosCompra: sanearAnulados(c.anuladosCompra), schemaVersion: SCHEMA };
 }
 // Rastro de las ventas anuladas que ya tenían número de comprobante: {numero, fecha, cliente, total}. Se conservan las últimas 500.
 function sanearAnulados(l) {
@@ -115,7 +116,7 @@ function sanearNegocio(n) {
   n = n && typeof n === 'object' && !Array.isArray(n) ? n : {};
   const t = (x, def, max = 100) => (typeof x === 'string' ? x.trim().slice(0, max) : def), base = negocioBase();
   const prefijo = typeof n.prefijo === 'string' && /^[A-Za-z0-9]{0,6}$/.test(n.prefijo.trim()) ? n.prefijo.trim().toUpperCase() : base.prefijo;
-  return { nombre: t(n.nombre, base.nombre), nit: t(n.nit, '', 30), direccion: t(n.direccion, '', 150), telefono: t(n.telefono, '', 30), ciudad: t(n.ciudad, '', 60), prefijo };
+  return { nombre: t(n.nombre, base.nombre), nit: t(n.nit, '', 30), direccion: t(n.direccion, '', 150), telefono: t(n.telefono, '', 30), ciudad: t(n.ciudad, '', 60), prefijo, prefijoCompra: typeof n.prefijoCompra === 'string' && /^[A-Za-z0-9]{0,6}$/.test(n.prefijoCompra.trim()) ? n.prefijoCompra.trim().toUpperCase() : base.prefijoCompra };
 }
 // Devuelve datos limpios y la lista de registros inválidos (que NO se incluyen).
 function limpiar(crudo) {
@@ -133,6 +134,9 @@ function limpiar(crudo) {
   // El consecutivo nunca puede quedar por debajo del mayor número ya emitido (ventas o anuladas): evita repetir números.
   const mayor = Math.max(0, ...datos.ventas.map(v => v.numero || 0), ...datos.config.anulados.map(a => a.numero));
   datos.config.consecutivo = Math.min(MAX_NUMERO, Math.max(datos.config.consecutivo, mayor + 1));
+  // Lo mismo para los comprobantes de compra (su numeración es aparte).
+  const mayorC = Math.max(0, ...datos.entradas.map(e => e.numero || 0), ...datos.config.anuladosCompra.map(a => a.numero));
+  datos.config.consecutivoCompra = Math.min(MAX_NUMERO, Math.max(datos.config.consecutivoCompra, mayorC + 1));
   // Una compra cuyo proveedor no existe (respaldo dañado o editado) dejaría una deuda invisible: se recrea el proveedor.
   const conocidos = new Set(datos.proveedores.map(p => p.id));
   const faltan = [...new Set(datos.entradas.map(e => e.proveedorId).filter(id => id && !conocidos.has(id)))];
@@ -595,7 +599,7 @@ VISTAS.comprar = () => {
       <button class="btn btn-teal btn-big" type="submit">Guardar entrada</button>
     </form>
     <section class="card"><h3>Últimas entradas</h3>
-      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${e.panales != null ? money(e.costoPanal) + ' c/panal' : money(e.costoUnitario) + ' c/u'}${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.proveedorId && proveedor(e.proveedorId) ? ' · ' + esc(proveedor(e.proveedorId).nombre) : ''}${e.proveedorId && debeEntrada(e) > 0 ? ' · <strong class="neg">debes ' + money(debeEntrada(e)) + '</strong>' : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
+      ${rec.length ? `<div class="list">${rec.map(e => { const p = prod(e.productoId); return `<div class="row"><div class="main"><div class="t">${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div><div class="s">${verFecha(e.fecha)} · ${e.panales != null ? money(e.costoPanal) + ' c/panal' : money(e.costoUnitario) + ' c/u'}${e.vence ? ' · vence ' + verFecha(e.vence) : ''}${e.proveedorId && proveedor(e.proveedorId) ? ' · ' + esc(proveedor(e.proveedorId).nombre) : ''}${e.proveedorId && debeEntrada(e) > 0 ? ' · <strong class="neg">debes ' + money(debeEntrada(e)) + '</strong>' : ''}${e.notas ? ' · ' + esc(e.notas) : ''}</div></div><div class="r"><strong>${money(e.total)}</strong><br><button class="link-btn neutro" data-act="comprobante-compra" data-id="${esc(e.id)}">Comprobante</button> <button class="link-btn" data-act="entrada-anular" data-id="${esc(e.id)}">Anular</button></div></div>`; }).join('')}</div>` : '<p class="empty">No hay entradas registradas.</p>'}</section>`;
 };
 MONTAR.comprar = () => {
   const f = $('#f-entrada');
@@ -654,7 +658,7 @@ MONTAR.comprar = () => {
     if (p.control === 'vencimiento' && !fechaOk(vence)) return aviso('Escribe la fecha de vencimiento', true);
     if (vence && vence < fecha) return aviso('La fecha de vencimiento es anterior a la llegada', true);
     const notas = $('#e-notas').value.trim();
-    const proveedorId = $('#e-prov').value || null, parcial = pagoModo() === 'parcial';
+    const proveedorId = $('#e-prov').value || null, parcial = pagoModo() === 'parcial', nEntradas = entradas.length;
     let pagado = total; const abonos = [];
     if (parcial) {
       if (!proveedorId) return aviso('Si queda debiendo, elige a quién (o crea el proveedor con +)', true);
@@ -671,6 +675,8 @@ MONTAR.comprar = () => {
       entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, costoPrevio, lastCostPrevio });
     }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${parcial ? ' · debes ' + money(total - pagado) : ''}`);
     memoCompra = { proveedorId: proveedorId || '', pago: parcial ? 'parcial' : 'todo' };
+    // Solo si la compra se guardó (si falló, el estado se revirtió y no hay comprobante que mostrar).
+    if (entradas.length > nEntradas) abrirComprobanteCompra(entradas[entradas.length - 1].id); // dice si se pagó todo y cuánto queda pendiente
     repintar();
   });
 };
@@ -856,6 +862,7 @@ function verProveedor(id) {
       return `<div class="pedido"><div class="top-line"><strong>${verFecha(e.fecha)}</strong><span class="badge ${est[0]}">${est[1]}</span></div>
         <div>${cantTxt(e)} × ${esc(p ? p.name : 'Producto eliminado')}</div>
         <div>Total ${money(e.total)} · pagado ${money(pag)} · <strong>falta ${money(resta)}</strong></div>
+        <div><button class="link-btn neutro" data-act="comprobante-compra" data-id="${esc(e.id)}">Ver comprobante${e.numero ? ' N° ' + esc(numeroTxtCompra(e.numero)) : ''}</button></div>
         ${resta > 0 ? `<div class="btn-row"><button class="btn btn-sm btn-teal" data-act="pagar-proveedor" data-prov="${esc(id)}" data-entrada="${esc(e.id)}">Pagar</button><button class="btn btn-sm btn-sun" data-act="pagar-compra-completa" data-id="${esc(e.id)}">Pagar lo que falta</button></div>` : ''}</div>`;
     }).join('') : '<p class="empty">Todavía no hay compras a este proveedor.</p>'}`);
 }
@@ -1103,6 +1110,88 @@ function imprimirDocumento() {
   finally { setTimeout(() => document.body.classList.remove('imprime-doc'), 1000); } // por si el navegador no avisa al terminar
 }
 
+/* =============== Comprobante de compra (a las fincas) =============== */
+/* Documento de la compra a un proveedor: qué llegó, cuánto vale, si se pagó en su totalidad, cuánto se pagó y cuánto queda
+   pendiente (con la fecha de cada pago). Numeración propia (prefijo y consecutivo de compras). Es de control interno: no
+   reemplaza la factura del proveedor ni el documento soporte que exija la DIAN. */
+const numeroTxtCompra = n => { const pf = (config.negocio && config.negocio.prefijoCompra) || ''; return `${pf}${pf ? '-' : ''}${String(n).padStart(6, '0')}`; };
+// Las compras al mismo proveedor el mismo día salen juntas (una entrega, un comprobante); una vez numerado, el grupo queda fijo.
+function grupoCompra(e) {
+  if (!e.proveedorId) return [e];
+  if (e.numero) return entradas.filter(x => x.numero === e.numero && x.proveedorId === e.proveedorId);
+  return entradas.filter(x => x.proveedorId === e.proveedorId && x.fecha === e.fecha && !x.numero);
+}
+const mayorNumeroCompra = () => Math.max(0, ...entradas.map(e => e.numero || 0), ...config.anuladosCompra.map(a => a.numero));
+function siguienteNumeroCompra() {
+  const usados = new Set([...entradas.map(e => e.numero), ...config.anuladosCompra.map(a => a.numero)]);
+  let n = Math.max(1, config.consecutivoCompra);
+  while (usados.has(n)) n++;
+  return n;
+}
+function numerarGrupoCompra(grupo) {
+  const n = siguienteNumeroCompra();
+  if (n > MAX_NUMERO) { aviso('Se acabaron los números de comprobante de compra (el máximo es 999999999).', true); return false; }
+  const ids = new Set(grupo.map(x => x.id));
+  return aplicar(() => { entradas.forEach(x => { if (ids.has(x.id)) x.numero = n; }); config.consecutivoCompra = n + 1; }, '');
+}
+// Pagos de la compra: el que se hizo al recibir la mercancía y los abonos posteriores, cada uno con su fecha.
+function pagosDeCompra(grupo) {
+  const out = [];
+  grupo.forEach(e => {
+    const abonos = e.abonos || [], sumaAbonos = redondear(abonos.reduce((s, a) => s + a.monto, 0)), inicial = redondear((e.pagado ?? e.total) - sumaAbonos);
+    if (inicial > 0.004) out.push({ fecha: e.fecha, concepto: 'Al recibir la mercancía', monto: inicial });
+    abonos.forEach(a => out.push({ fecha: a.fecha, concepto: 'Abono', monto: a.monto }));
+  });
+  return out.sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+function comprobanteCompraHTML(grupo) {
+  const neg = config.negocio, e0 = grupo[0], pv = proveedor(e0.proveedorId);
+  const total = redondear(grupo.reduce((s, e) => s + e.total, 0)), pagado = redondear(grupo.reduce((s, e) => s + Math.min(e.total, e.pagado ?? e.total), 0));
+  const pendiente = aCero(redondear(total - pagado));
+  const estado = pendiente <= 0 ? 'Pagada en su totalidad' : pagado > 0 ? 'Pago parcial' : 'Sin pagos: todo está pendiente';
+  const filas = grupo.map(e => {
+    const p = prod(e.productoId), panal = e.panales != null && e.panales > 0;
+    return `<tr><td>${esc(p ? p.name : 'Producto eliminado')}${panal ? `<small> · panal de ${num(e.cantidad / e.panales)} u.</small>` : ''}${e.vence ? `<small> · vence ${verFecha(e.vence)}</small>` : ''}</td><td class="num">${panal ? num(e.panales) + (e.panales === 1 ? ' panal' : ' panales') : num(e.cantidad) + ' ' + esc(p ? p.unit : '')}</td><td class="num">${money(panal ? e.costoPanal : e.costoUnitario)}</td><td class="num">${money(e.total)}</td></tr>`;
+  }).join('');
+  const pagos = pagosDeCompra(grupo);
+  const filasPagos = pagos.length ? pagos.map(p => `<tr><td>${verFecha(p.fecha)}</td><td>${esc(p.concepto)}</td><td class="num">${money(p.monto)}</td></tr>`).join('') : '<tr><td colspan="3">Todavía no se ha registrado ningún pago.</td></tr>';
+  const linea = (t, v) => (v ? `<div>${t}${esc(v)}</div>` : '');
+  const anul = e0.numero ? config.anuladosCompra.filter(a => a.numero === e0.numero) : [];
+  const notaAnulados = anul.length ? `<p class="doc-nota doc-anulados"><strong>Este comprobante tuvo ${anul.length} ${anul.length === 1 ? 'compra anulada' : 'compras anuladas'} por ${money(anul.reduce((s, a) => s + a.total, 0))}.</strong></p>` : '';
+  return `<article class="doc">
+    <header class="doc-head">
+      <div class="doc-emisor"><h2>${esc(neg.nombre || 'El Gallinero')}</h2>${linea('NIT / CC: ', neg.nit)}${linea('', neg.direccion)}${linea('', [neg.ciudad, neg.telefono].filter(Boolean).join(' · '))}</div>
+      <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE COMPRA</div><div class="doc-n">${e0.numero ? 'N° ' + esc(numeroTxtCompra(e0.numero)) : 'Borrador · el número se asigna al imprimir'}</div><div>Fecha: ${verFecha(e0.fecha)}</div></div>
+    </header>
+    <section class="doc-cliente"><h3>Proveedor</h3>
+      <div><strong>${esc(pv ? pv.nombre : 'Sin proveedor registrado')}</strong></div>${pv ? linea('Teléfono: ', pv.telefono) + linea('Notas: ', pv.notas) : ''}</section>
+    <div class="doc-estado ${pendiente > 0 ? 'pend' : 'ok'}">${estado}</div>
+    <table class="doc-tabla"><thead><tr><th>Descripción</th><th class="num">Cantidad</th><th class="num">V. unitario</th><th class="num">V. total</th></tr></thead><tbody>${filas}</tbody></table>
+    <div class="doc-totales">
+      <div><span>Total de la compra</span><strong>${money(total)}</strong></div>
+      <div><span>Pagado</span><strong>${money(pagado)}</strong></div>
+      <div class="doc-saldo"><span>Pendiente por pagar</span><strong>${money(pendiente)}</strong></div>
+    </div>
+    <h3 class="doc-sub">Pagos registrados</h3>
+    <table class="doc-tabla doc-pagos"><thead><tr><th>Fecha</th><th>Concepto</th><th class="num">Valor</th></tr></thead><tbody>${filasPagos}</tbody></table>
+    <div class="doc-firmas"><div>Recibe la mercancía</div><div>Entrega (proveedor)</div></div>
+    ${notaAnulados}<p class="doc-nota">Comprobante de compra de control interno. No reemplaza la factura del proveedor ni el documento soporte que exija la DIAN cuando aplique.</p>
+  </article>`;
+}
+// Abrir un comprobante de compra NO gasta número: sin número es una vista previa (borrador). El número se asigna al imprimir.
+function abrirComprobanteCompra(id) {
+  const e = entradas.find(x => x.id === id); if (!e) return;
+  hoja('Comprobante de compra', `${comprobanteCompraHTML(grupoCompra(e))}<div class="btn-row no-print"><button class="btn btn-teal" data-act="imprimir-doc" data-tipo="compra" data-id="${esc(e.id)}">Imprimir</button><button class="btn btn-ghost" data-act="cerrar">Cerrar</button></div>`);
+}
+function imprimirComprobanteCompra(id) {
+  const e = entradas.find(x => x.id === id); if (!e) return;
+  if (!e.numero) {
+    if (!numerarGrupoCompra(grupoCompra(e))) return aviso('No se pudo guardar el número del comprobante, así que no se imprimió. Libera espacio e inténtalo de nuevo.', true);
+    abrirComprobanteCompra(id); repintar(); // ya con su número
+  }
+  imprimirDocumento();
+}
+
 /* =============== Más =============== */
 VISTAS.mas = () => `
   ${cabecera('Más')}
@@ -1333,6 +1422,10 @@ VISTAS.ajustes = () => `
       <label class="field"><span>Prefijo</span><input id="ng-prefijo" type="text" maxlength="6" value="${esc(config.negocio.prefijo)}" autocomplete="off"><div class="hint">Hasta 6 letras o números. Ej: CV</div></label>
       <label class="field"><span>Próximo número</span><input id="ng-consec" type="number" inputmode="numeric" min="${esc(mayorNumero() + 1)}" step="1" value="${esc(config.consecutivo)}"><div class="hint">Para seguir tu propia numeración. No puede ser menor a lo ya emitido.</div></label>
     </div>
+    <div class="row2">
+      <label class="field"><span>Prefijo de compras</span><input id="ng-prefijo-c" type="text" maxlength="6" value="${esc(config.negocio.prefijoCompra)}" autocomplete="off"><div class="hint">Comprobantes de compra. Ej: CP</div></label>
+      <label class="field"><span>Próximo n.° de compra</span><input id="ng-consec-c" type="number" inputmode="numeric" min="1" step="1" value="${esc(config.consecutivoCompra)}"></label>
+    </div>
     <button class="btn btn-teal" type="submit">Guardar datos del negocio</button>
   </form>
   <p class="muted" style="margin-top:12px">Versión de la app: <span id="aj-version">—</span></p>`;
@@ -1351,8 +1444,13 @@ MONTAR.ajustes = () => {
     if (!(Number.isInteger(consec) && consec >= 1 && consec <= MAX_NUMERO)) return aviso('El próximo número debe ser un entero desde 1', true);
     const minimo = mayorNumero() + 1;
     if (consec < minimo) return aviso(`Ya se emitió el comprobante ${numeroTxt(minimo - 1)}: el próximo número debe ser ${minimo} o más (mínimo ${minimo}).`, true);
+    const prefC = $('#ng-prefijo-c').value.trim(), consecC = leerNum($('#ng-consec-c').value);
+    if (!/^[A-Za-z0-9]{0,6}$/.test(prefC)) return aviso('El prefijo de compras solo admite hasta 6 letras o números', true);
+    if (!(Number.isInteger(consecC) && consecC >= 1 && consecC <= MAX_NUMERO)) return aviso('El próximo número de compra debe ser un entero desde 1', true);
+    const minimoC = mayorNumeroCompra() + 1;
+    if (consecC < minimoC) return aviso(`Ya se emitió el comprobante de compra ${numeroTxtCompra(minimoC - 1)}: el próximo número debe ser ${minimoC} o más.`, true);
     const t = (id, max) => $(id).value.trim().slice(0, max);
-    aplicar(() => { config.negocio = { nombre: t('#ng-nombre', 100) || 'El Gallinero', nit: t('#ng-nit', 30), direccion: t('#ng-dir', 150), telefono: t('#ng-tel', 30), ciudad: t('#ng-ciudad', 60), prefijo: prefijo.toUpperCase() }; config.consecutivo = consec; }, 'Datos del negocio guardados');
+    aplicar(() => { config.negocio = { nombre: t('#ng-nombre', 100) || 'El Gallinero', nit: t('#ng-nit', 30), direccion: t('#ng-dir', 150), telefono: t('#ng-tel', 30), ciudad: t('#ng-ciudad', 60), prefijo: prefijo.toUpperCase(), prefijoCompra: prefC.toUpperCase() }; config.consecutivoCompra = consecC; config.consecutivo = consec; }, 'Datos del negocio guardados');
   });
 };
 
@@ -1574,7 +1672,8 @@ const ACCIONES = {
   paso: el => { const i = $('#' + el.dataset.t); i.value = Math.max(1, (parseInt(i.value, 10) || 0) + parseInt(el.dataset.d, 10)); i.dispatchEvent(new Event('input', { bubbles: true })); },
   'graf-tipo': el => { grafTipo = el.dataset.t; repintar(); },
   comprobante: el => abrirComprobante(Number(el.dataset.id)),
-  'imprimir-doc': el => { const id = el && el.dataset ? Number(el.dataset.id) : NaN; if (id) imprimirComprobante(id); else imprimirDocumento(); },
+  'comprobante-compra': el => abrirComprobanteCompra(Number(el.dataset.id)),
+  'imprimir-doc': el => { const id = el && el.dataset ? Number(el.dataset.id) : NaN; if (id && el.dataset.tipo === 'compra') imprimirComprobanteCompra(id); else if (id) imprimirComprobante(id); else imprimirDocumento(); },
   'cliente-nuevo': el => formCliente(null, el.dataset.vuelta),
   'proveedor-nuevo': el => formProveedor(null, el.dataset.vuelta),
   'proveedor-ver': el => verProveedor(el.dataset.id),
@@ -1607,7 +1706,7 @@ const ACCIONES = {
     const e = entradas.find(x => x.id === Number(el.dataset.id)); if (!e) return;
     const p0 = prod(e.productoId);
     if (p0 && p0.stock < e.cantidad) return aviso(`No se puede anular: ya se vendió parte de esta entrada (en bodega quedan ${num(p0.stock)} de ${num(e.cantidad)}).`, true);
-    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega.${e.proveedorId && (e.pagado ?? 0) > 0 ? ` Ya se habían pagado ${money(e.pagado)} al proveedor: ese dinero queda como saldo a favor tuyo con ese proveedor.` : ''} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega.${e.proveedorId && (e.pagado ?? 0) > 0 ? ` Ya se habían pagado ${money(e.pagado)} al proveedor: ese dinero queda como saldo a favor tuyo con ese proveedor.` : ''}${e.numero ? ` Esta compra está en el comprobante ${numeroTxtCompra(e.numero)}, que ya se pudo imprimir: ese comprobante cambiará (el número no se reutiliza y quedará una nota de compra anulada).` : ''} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
     aplicar(() => {
       const p = prod(e.productoId), resto = entradas.filter(x => x.id !== e.id);
       if (p) {
@@ -1616,6 +1715,7 @@ const ACCIONES = {
         if (esUltima && e.costoPrevio !== undefined) { p.cost = e.costoPrevio; p.lastCost = e.lastCostPrevio || 0; } else recalcularCosto(p, resto);
       }
       entradas = resto;
+      if (e.numero) { const pr = proveedor(e.proveedorId); config.anuladosCompra = [...config.anuladosCompra, { numero: e.numero, fecha: e.fecha, cliente: pr ? pr.nombre.slice(0, 100) : '', total: e.total }].slice(-MAX_ANULADOS); }
       const pv = e.proveedorId && (e.pagado ?? 0) > 0 ? proveedor(e.proveedorId) : null;
       if (pv) pv.saldoFavor = redondear((pv.saldoFavor || 0) + e.pagado); // lo ya pagado no se pierde: queda a favor del dueño
     }, 'Entrada anulada');
