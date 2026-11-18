@@ -13,7 +13,7 @@ const cli = (o = {}) => ({ id: 'c1', nombre: 'Tienda Doña Rosa', telefono: '', 
 const finca = (o = {}) => ({ id: 'f1', nombre: 'Finca La Esperanza', telefono: '', notas: '', ...o });
 const negocio = { nombre: 'El Gallinero', nit: '', direccion: '', telefono: '', ciudad: '', prefijo: 'CV' };
 const huevo = (o = {}) => prod({ panal: 30, ...o });
-const respaldo = (o = {}) => JSON.stringify({ app: 'el-gallinero', version: 4, products: [prod()], entradas: [], ventas: [], clientes: [], ajustes: [], proveedores: [], config: {}, ...o });
+const respaldo = (o = {}) => JSON.stringify({ app: 'el-gallinero', version: 5, products: [prod()], entradas: [], ventas: [], clientes: [], ajustes: [], proveedores: [], config: {}, ...o });
 
 async function restaurar(a, texto) {
   a.run('importarJSON')({ __texto: texto });
@@ -269,25 +269,27 @@ test('BUG-006 · si window.print() lanza, la clase de impresión se quita igual'
   assert.deepEqual(a.ev('__cl').filter(x => x === '-imprime-doc').length > 0, true);
   assert.equal(a.ev('__cl').at(-1), '-imprime-doc');
 });
-test('EVA-006 · SCHEMA es 4 y se guarda en los datos', () => {
+test('EVA-006 · SCHEMA es 5 y se guarda en los datos', () => {
   const a = cargarApp();
-  assert.equal(a.run('SCHEMA'), 4);
-  assert.equal(a.run('config.schemaVersion'), 4);
+  assert.equal(a.run('SCHEMA'), 5);
+  assert.equal(a.run('config.schemaVersion'), 5);
 });
-test('EVA-006 · se restauran respaldos v3 y v4; uno v5 se rechaza con un mensaje claro', async () => {
+test('EVA-006 · se restauran respaldos v3, v4 y v5; uno v6 se rechaza con un mensaje claro', async () => {
   const a = cargarApp({ seed: sembrar({ products: [prod({ stock: 7 })] }) });
   await restaurar(a, respaldo({ version: 3, products: [prod({ stock: 3 })] }));
   assert.equal(a.run('products[0].stock'), 3);
   assert.deepEqual(a.ev('config.anulados'), []);
   await restaurar(a, respaldo({ version: 4, products: [prod({ stock: 4 })] }));
   assert.equal(a.run('products[0].stock'), 4);
-  await restaurar(a, respaldo({ version: 5, products: [prod({ stock: 99 })] }));
-  assert.equal(a.run('products[0].stock'), 4, 'no se tocó nada');
+  await restaurar(a, respaldo({ version: 5, products: [prod({ stock: 5 })] }));
+  assert.equal(a.run('products[0].stock'), 5);
+  await restaurar(a, respaldo({ version: 6, products: [prod({ stock: 99 })] }));
+  assert.equal(a.run('products[0].stock'), 5, 'no se tocó nada');
   const t = a.toasts().at(-1);
   assert.ok(t.error && /versión más nueva de la app: actualiza la app/.test(t.texto), t.texto);
 });
 test('EVA-006 · datos guardados por una versión más nueva avisan al arrancar y conservan copia', () => {
-  const a = cargarApp({ seed: sembrar({ proveedores: [finca()], config: { schemaVersion: 5 } }) });
+  const a = cargarApp({ seed: sembrar({ proveedores: [finca()], config: { schemaVersion: 6 } }) });
   assert.match(a.run('avisoArranque'), /versión más nueva/);
   assert.ok(a.store.has('eg_prev'));
 });

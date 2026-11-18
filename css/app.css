@@ -367,3 +367,30 @@ details.datos .tbl td.num { white-space: nowrap; }
 .doc-estado.pend { border-width: 3px; }
 .doc-sub { margin: 12px 0 4px; }
 @media print { body.imprime-doc .doc-estado { border-color: #000; } }
+.icon-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+/* ---------- Caja, cobro y origen del dinero ---------- */
+/* Texto de apoyo sobre un selector: etiqueta corta que pertenece al grupo que le sigue. */
+.seg-nota { font-size: .86rem; font-weight: 700; color: var(--ink-soft); margin: 0 0 6px; }
+/* Dos selectores seguidos: una línea punteada y aire los separan en dos preguntas distintas. */
+.seg + .seg-nota { margin-top: 18px; padding-top: 14px; border-top: 1.5px dashed var(--line); }
+.seg label:active input:not(:checked):not(:disabled) + span { background: var(--sun); }
+.seg span { line-height: 1.25; min-height: 48px; display: flex; align-items: center; justify-content: center; }
+.row2 { align-items: end; }
+/* Cifra principal de la caja: ocupa todo el ancho; las otras tres quedan debajo. */
+.stat.hero { grid-column: 1 / -1; padding: 14px 16px; }
+.stat.hero .n { font-size: 2rem; }
+.stat.hero .l { font-size: .86rem; color: var(--ink); }
+.stat .n { font-variant-numeric: tabular-nums; }
+.row .r strong { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 1rem; }
+.row .r .link-btn { display: block; margin-left: auto; padding-right: 0; }
+.btn { line-height: 1.25; text-align: center; }
+.btn-ghost:active { background: var(--sun); }
+.icon-btn:active:not(:disabled) { background: var(--sun); }
+.period-nav .lbl { font-family: var(--display); font-weight: 400; font-size: 1.05rem; }
+.sheet-text { font-size: 1rem; line-height: 1.45; color: var(--ink); }
+@media (max-width: 360px) {
+  .stat .n { font-size: 1.15rem; }
+  .stat.hero .n { font-size: 1.7rem; }
+  .row .r strong { font-size: .95rem; }
+}

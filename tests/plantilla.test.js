@@ -68,11 +68,11 @@ function contratoDeCodeGs() {
 
 test('plantilla · las pestañas y cabeceras del .xlsx son las que escribe Code.gs', () => {
   const { espejo, importar } = contratoDeCodeGs();
-  assert.equal(espejo.length, 6);
+  assert.equal(espejo.length, 8);
   const xlsx = cabecerasDelXlsx();
-  assert.deepEqual(Object.keys(xlsx).sort(), ['Instrucciones', 'Importar clientes', ...espejo.map(e => e[0])].sort());
-  // «Importar clientes» lleva una nota de ayuda en la columna E: solo cuentan las columnas de la tabla.
-  assert.deepEqual(xlsx['Importar clientes'].slice(0, importar.length), importar);
+  assert.deepEqual(Object.keys(xlsx).sort(), ['Instrucciones', 'Cargar clientes', ...espejo.map(e => e[0])].sort());
+  // «Cargar clientes» lleva una nota de ayuda en la columna E: solo cuentan las columnas de la tabla.
+  assert.deepEqual(xlsx['Cargar clientes'].slice(0, importar.length), importar);
   for (const [nombre, cab] of espejo) assert.deepEqual(xlsx[nombre], cab, `cabecera de «${nombre}»`);
 });
 

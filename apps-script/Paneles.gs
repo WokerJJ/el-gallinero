@@ -9,7 +9,9 @@
  *
  * Contrato con Code.gs (las columnas se leen por letra; el script de la app solo agrega columnas al final):
  *   Ventas:      A Fecha · B Producto · C Cantidad · D Panales · E Precio · F Total · G Cliente · H Pago · I Abonado ·
- *                J Debe · K Comprobante · L Costo unitario (costo por unidad EN EL MOMENTO de la venta)
+ *                J Debe · K Comprobante · L Costo unitario (costo por unidad EN EL MOMENTO de la venta) ·
+ *                M Medio de cobro (Efectivo / Transferencia) · N Abonado en efectivo · O Abonado por transferencia
+ *                (N y O: lo abonado a ventas a crédito según el medio de cada abono; los abonos sin medio cuentan como efectivo)
  *   Compras:     A Fecha · B Producto · C Cantidad · D Panales · E Costo unitario · F Total · G Vence · H Días en granja ·
  *                I Notas · J Proveedor · K Pagado · L Debe · M Comprobante
  *   Proveedores: A Proveedor · B Teléfono · C Deuda · D Notas · E Saldo a favor
@@ -280,11 +282,15 @@ function buildMotor_() {
   // Métodos de pago
   sh.getRange('D17:E17').setValues([['Método', 'Total']]);
   const pago = re => `=SUMPRODUCT(ARRAYFORMULA(--REGEXMATCH(LOWER(Ventas!H2:H&""),"${re}")),Ventas!F2:F)`;
-  sh.getRange('D18:D20').setValues([['Efectivo / contado'], ['Transferencia'], ['Crédito']]);
-  sh.getRange('E18').setFormula(pago('efect|contado'));
-  sh.getRange('E19').setFormula(pago('transf|nequi|davi|banc'));
+  sh.getRange('D18:D22').setValues([['Efectivo / contado'], ['Transferencia'], ['Crédito'], ['Cobrado en efectivo (contado + abonos)'], ['Cobrado por transferencia (contado + abonos)']]);
+  // Contado en efectivo y contado por transferencia se separan con la columna «Medio de cobro» (Ventas!M).
+  sh.getRange('E18').setFormula('=SUMPRODUCT((Ventas!H2:H="Contado")*(LOWER(Ventas!M2:M&"")<>"transferencia"),Ventas!F2:F)');
+  sh.getRange('E19').setFormula('=SUMPRODUCT((Ventas!H2:H="Contado")*(LOWER(Ventas!M2:M&"")="transferencia"),Ventas!F2:F)');
   sh.getRange('E20').setFormula(pago('cr[eé]d|fiad'));
-  sh.getRange('E18:E20').setNumberFormat(MONEY);
+  // Lo realmente cobrado por medio: el contado de cada medio más los abonos de ventas a crédito (Ventas!N y O), que tienen su propio medio.
+  sh.getRange('E21').setFormula('=E18+SUM(Ventas!N2:N)');
+  sh.getRange('E22').setFormula('=E19+SUM(Ventas!O2:O)');
+  sh.getRange('E18:E22').setNumberFormat(MONEY);
 
   // Por producto (ordenado por ventas)
   sh.getRange('D23:G23').setValues([['Producto', 'Vendido $', 'Unidades vendidas', 'Existencias']]);

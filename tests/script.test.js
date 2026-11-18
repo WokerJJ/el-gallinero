@@ -33,6 +33,7 @@ class HojaFalsa {
       clearContent() { h.toques.push({ op: 'limpiar', ...rango }); recorrer((r, k) => h.celdas.delete(`${r},${k}`)); return this; },
       setValues(v) { h.toques.push({ op: 'escribir', ...rango }); recorrer((r, k, i, j) => h.celdas.set(`${r},${k}`, v[i][j])); return this; },
       setFontWeight() { h.toques.push({ op: 'formato', ...rango }); return this; },
+      setFontColor() { h.toques.push({ op: 'formato', ...rango }); return this; },
       getValues() { const o = []; recorrer((r, k, i, j) => { (o[i] ||= [])[j] = h.celdas.get(`${r},${k}`) ?? ''; }); return o; },
       getDisplayValues() { return this.getValues().map(fila => fila.map(String)); },
     };
@@ -110,8 +111,8 @@ test('script · un texto que parece fórmula se escribe neutralizado', () => {
   assert.equal(h.celda(3, 1), "'+57");
 });
 
-test('script · «Importar clientes» devuelve solo las filas con nombre, tal como se ven', () => {
-  const h = new HojaFalsa('Importar clientes', { celdas: {
+test('script · «Cargar clientes» devuelve solo las filas con nombre, tal como se ven', () => {
+  const h = new HojaFalsa('Cargar clientes', { celdas: {
     '1,1': 'Nombre', '2,1': 'Ana', '2,2': '300', '2,3': 'Plaza', '3,1': '', '3,2': '999', '4,1': '  ', '5,1': 'Luis',
   } });
   const s = cargarScript({ hojas: [h] });
@@ -125,7 +126,7 @@ test('script · «Importar clientes» devuelve solo las filas con nombre, tal co
 test('script · el tope se aplica después de descartar las filas vacías y avisa si truncó', () => {
   const celdas = { '1,1': 'Nombre' };
   for (let i = 0; i < 20; i++) celdas[`${2 + i * 2},1`] = `Cliente ${i}`; // una fila con nombre y una vacía, alternadas
-  const h = new HojaFalsa('Importar clientes', { filas: 1000, celdas });
+  const h = new HojaFalsa('Cargar clientes', { filas: 1000, celdas });
   const s = cargarScript({ hojas: [h] });
   const max = s.run('MAX_CLIENTES');
   assert.ok(max >= 1000);
@@ -136,14 +137,30 @@ test('script · el tope se aplica después de descartar las filas vacías y avis
   assert.equal(r.max, 5);
 });
 
-test('script · sin la pestaña «Importar clientes» la crea con su cabecera en vez de fallar', () => {
+test('script · sin la pestaña «Cargar clientes» la crea con su cabecera en vez de fallar', () => {
   const s = cargarScript();
   const r = plano(s.run('clientesImportar_')());
   assert.equal(r.ok, true);
   assert.deepEqual(r.filas, []);
-  const h = s.libro.get('Importar clientes');
+  const h = s.libro.get('Cargar clientes');
   assert.ok(h, 'la pestaña se creó');
   assert.deepEqual(plano(h.getRange(1, 1, 1, 3).getValues()), [['Nombre', 'Teléfono', 'Notas / dirección']]);
+});
+
+test('script · la pestaña de entrada nace con una nota de ayuda que no se lee como cliente', () => {
+  const s = cargarScript();
+  s.run('clientesImportar_')();
+  const h = s.libro.get('Cargar clientes');
+  assert.match(String(h.celda(1, 5)), /pegas tú los clientes/i, 'la nota está en la columna E');
+  assert.match(String(h.celda(3, 5)), /Traer clientes del Sheet/);
+  // La nota está fuera de las columnas A–C: una lectura posterior no la toma por un cliente.
+  const r = plano(s.run('clientesImportar_')());
+  assert.deepEqual(r.filas, []);
+});
+test('script · el nombre de la pestaña de entrada es el que usan la plantilla y los avisos', () => {
+  const codigo = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
+  assert.match(codigo, /const NOMBRE_CARGAR = 'Cargar clientes'/);
+  assert.ok(!/Importar clientes/.test(codigo), 'no queda el nombre viejo en el script');
 });
 
 test('script · doPost rechaza una clave incorrecta y la clave por defecto', () => {
@@ -271,4 +288,71 @@ test('script · Proveedores incluye el saldo a favor', () => {
   assert.equal(p.celda(2, 5), 15000);
   const sin = guardarS().hoja('Proveedores');
   assert.equal(sin.celda(2, 5), 0, 'un proveedor sin saldo a favor deja 0');
+});
+
+/* ---------- caja, medio de cobro y recepción de mercancía ---------- */
+test('script · Caja escribe cada movimiento como Ingreso o Egreso (nunca los dos), el más reciente primero', () => {
+  const { hoja } = guardarS(datosS({ movimientos: [
+    { id: 10, fecha: '2026-11-17', tipo: 'ingreso', monto: 100000, concepto: 'Saldo inicial de la caja', origen: 'apertura', por: 'Dueño' },
+    { id: 11, fecha: '2026-11-17', tipo: 'egreso', monto: 40000, concepto: 'Compra · 4 panales', origen: 'compra', por: 'Luis' },
+  ] }));
+  const c = hoja('Caja');
+  assert.deepEqual(plano(c.getRange(1, 1, 1, 6).getValues())[0], ['Fecha', 'Concepto', 'Ingreso', 'Egreso', 'Origen', 'Registró']);
+  assert.equal(c.celda(2, 2), 'Compra · 4 panales');
+  assert.equal(c.celda(2, 3), '', 'un egreso no lleva ingreso');
+  assert.equal(c.celda(2, 4), 40000);
+  assert.equal(c.celda(2, 5), 'Compra');
+  assert.equal(c.celda(2, 6), 'Luis');
+  assert.equal(c.celda(3, 3), 100000);
+  assert.equal(c.celda(3, 4), '');
+  assert.equal(c.celda(3, 5), 'Saldo inicial');
+});
+test('script · Cierres escribe lo esperado, lo contado y la diferencia', () => {
+  const { hoja } = guardarS(datosS({ cierres: [{ id: 5, fecha: '2026-11-17', esperado: 100000, contado: 98000, diferencia: -2000, nota: 'Faltó cambio', por: 'Dueño' }] }));
+  const c = hoja('Cierres');
+  assert.equal(c.celda(2, 2), 100000);
+  assert.equal(c.celda(2, 3), 98000);
+  assert.equal(c.celda(2, 4), -2000);
+  assert.equal(c.celda(2, 5), 'Faltó cambio');
+});
+test('script · sin caja las pestañas Caja y Cierres quedan solo con su cabecera', () => {
+  const { hoja } = guardarS();
+  assert.equal(hoja('Caja').celda(2, 1), undefined);
+  assert.equal(hoja('Cierres').celda(1, 1), 'Fecha');
+});
+test('script · Ventas dice si lo cobrado fue en efectivo o por transferencia', () => {
+  const { hoja } = guardarS(datosS({ ventas: [
+    { id: 1, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-12', clienteId: null, tipoPago: 'contado', pagado: 6000, medio: 'efectivo' },
+    { id: 2, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-11', clienteId: null, tipoPago: 'contado', pagado: 6000, medio: 'transferencia' },
+    { id: 3, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-10', clienteId: 'c1', tipoPago: 'credito', pagado: 0 },
+  ] }));
+  const v = hoja('Ventas');
+  assert.equal(v.celda(1, 13), 'Medio de cobro');
+  assert.equal(v.celda(2, 13), 'Efectivo');
+  assert.equal(v.celda(3, 13), 'Transferencia');
+  assert.equal(v.celda(4, 13), '', 'a crédito sin abono no hay medio');
+});
+test('script · Compras lleva quién recibió y el documento del proveedor', () => {
+  const { hoja } = guardarS(datosS({ entradas: [{ id: 3, productoId: 'campo', cantidad: 300, costoUnitario: 400, total: 1000, fecha: '2026-11-05', proveedorId: 'f1', recibidoPor: 'Luis Pérez', documentoProveedor: 'F-1234' }] }));
+  const c = hoja('Compras');
+  assert.equal(c.celda(1, 14), 'Recibió');
+  assert.equal(c.celda(1, 15), 'Documento proveedor');
+  assert.equal(c.celda(2, 14), 'Luis Pérez');
+  assert.equal(c.celda(2, 15), 'F-1234');
+});
+
+test('script · Ventas separa lo abonado a crédito por medio (los abonos sin medio cuentan como efectivo)', () => {
+  const { hoja } = guardarS(datosS({ ventas: [
+    { id: 1, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-12', clienteId: 'c1', tipoPago: 'credito', pagado: 3000, medio: 'transferencia',
+      abonos: [{ fecha: '2026-11-12', monto: 1000, medio: 'transferencia' }, { fecha: '2026-11-13', monto: 1500, medio: 'efectivo' }, { fecha: '2026-11-14', monto: 500 }] },
+    { id: 2, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-11', clienteId: null, tipoPago: 'contado', pagado: 6000, medio: 'efectivo' },
+  ] }));
+  const v = hoja('Ventas');
+  assert.equal(v.celda(1, 14), 'Abonado en efectivo');
+  assert.equal(v.celda(1, 15), 'Abonado por transferencia');
+  assert.equal(v.celda(2, 14), 2000, 'efectivo: 1500 + el abono sin medio de 500');
+  assert.equal(v.celda(2, 15), 1000);
+  assert.equal(v.celda(3, 14), '', 'una venta de contado no tiene abonos');
+  assert.equal(v.celda(3, 15), '');
+  assert.equal(v.celda(1, 13), 'Medio de cobro', 'las columnas anteriores no se movieron');
 });

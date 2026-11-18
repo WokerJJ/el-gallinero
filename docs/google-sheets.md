@@ -36,7 +36,7 @@ El teléfono sigue siendo la fuente de los datos: el Sheet es un espejo. Si se c
 WhatsApp no deja exportar la lista de clientes: los clientes son los **contactos guardados en el teléfono**. La ruta es sacarlos de la agenda y pegarlos en la plantilla:
 
 1. **Contactos a un archivo.** En Android (o un iPhone con los contactos en Google): [contacts.google.com](https://contacts.google.com) → seleccionar → *Exportar* → *CSV de Google*. En un iPhone sin Google: [icloud.com](https://www.icloud.com) → Contactos → seleccionar todos → *Exportar vCard*, súbelo en contacts.google.com (*Importar*) y expórtalo como CSV.
-2. Abre el CSV en Hojas de cálculo y copia a la pestaña **Importar clientes** de la plantilla (desde la fila 2):
+2. Abre el CSV en Hojas de cálculo y copia a la pestaña **Cargar clientes** de la plantilla (desde la fila 2):
    - **Columna A (nombre):** la columna del nombre completo (*Name*) o, si no la hay, junta **First Name** y **Last Name**.
    - **Columna B (teléfono):** solo **Phone 1 - Value**. Ignora las demás columnas de teléfono (*Phone 2*, *Phone 3*…) y, si una celda trae varios números separados por ` ::: `, la app toma el primero.
    - **Columna C (notas o dirección):** opcional.
@@ -46,7 +46,8 @@ WhatsApp no deja exportar la lista de clientes: los clientes son los **contactos
 **Límites y cuidados:**
 
 - Se leen hasta **5.000 filas con nombre** (las filas vacías no cuentan). Si hay más, la app avisa: «Solo se leyeron las primeras 5000 filas».
-- La pestaña **Importar clientes NO entra en el respaldo oculto** (`_respaldo`): los clientes que traigas quedan en la app, y de ahí sí se respaldan, pero la lista pegada en esa pestaña se pierde si borras el Sheet. Guarda el CSV original o vuelve a pegarlo cuando haga falta.
+- **Clientes** y **Cargar clientes** no son lo mismo: *Clientes* es el espejo de la app (la app la reescribe en cada envío; no pegues nada ahí) y *Cargar clientes* es de entrada (la llenas tú y la app solo la lee). *PANEL CLIENTES* solo resume lo que hay en *Clientes*.
+- La pestaña **Cargar clientes NO entra en el respaldo oculto** (`_respaldo`): los clientes que traigas quedan en la app, y de ahí sí se respaldan, pero la lista pegada en esa pestaña se pierde si borras el Sheet. Guarda el CSV original o vuelve a pegarlo cuando haga falta.
 - Si falta esa pestaña, el script la crea (con su cabecera) la primera vez que pulsas **Traer clientes del Sheet**.
 - Teléfonos: de cada celda se toma solo el primer número (se corta en «ext», «x», `/`, `;` o `,`) y deben tener entre 7 y 12 dígitos; lo demás se guarda sin teléfono. El +57 y el prefijo 00 se ignoran, pero otro país (+1…) cuenta como un número distinto.
 - Si varias personas ya guardadas **sin teléfono** tienen el mismo nombre que una fila, la app no adivina a cuál pertenece: no toca ninguna y lo cuenta como *ambiguo* en el aviso de confirmación.
@@ -66,18 +67,22 @@ El script solo reescribe el bloque de la tabla (las columnas de cada pestaña, d
 | Pestaña | Columnas |
 | --- | --- |
 | Inventario | Producto · Unidad · Existencias · Costo promedio · Precio de venta · Control de frescura |
-| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe · Comprobante · Costo unitario |
-| Compras | Fecha · Producto · Cantidad · Panales · Costo unitario · Total · Vence · Días en granja · Notas · Proveedor · Pagado · Debe · Comprobante |
+| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe · Comprobante · Costo unitario · Medio de cobro · Abonado en efectivo · Abonado por transferencia |
+| Compras | Fecha · Producto · Cantidad · Panales · Costo unitario · Total · Vence · Días en granja · Notas · Proveedor · Pagado · Debe · Comprobante · Recibió · Documento proveedor |
 | Proveedores | Proveedor · Teléfono · Deuda · Notas · Saldo a favor |
 | Clientes | Cliente · Teléfono · Deuda · Notas · Documento |
 | Pérdidas | Fecha · Producto · Cantidad · Costo unitario · Motivo |
-| Importar clientes (se llena a mano) | Nombre · Teléfono · Notas / dirección |
+| Caja | Fecha · Concepto · Ingreso · Egreso · Origen · Registró |
+| Cierres | Fecha · Esperado · Contado · Diferencia · Nota · Registró |
+| Cargar clientes (se llena a mano) | Nombre · Teléfono · Notas / dirección |
 
 - En **Compras**, *Debe* es lo que falta por pagar al proveedor (cuentas por pagar); las compras anteriores a esta función se toman como pagadas por completo.
 - En **Compras**, *Comprobante* es el número del comprobante de compra (con su propio prefijo y consecutivo, por ejemplo `CP-000001`).
 - En **Ventas**, *Comprobante* es el número consecutivo del comprobante de venta (vacío si todavía no se ha generado uno).
 - En **Ventas**, *Costo unitario* es el costo por unidad **en el momento de la venta** (el mismo que usa la app para su ganancia). Úsalo para calcular la ganancia: el costo actual del inventario cambia con cada compra y daría otra cifra. En **Proveedores**, *Saldo a favor* es lo pagado en compras que luego se anularon.
 - La pestaña oculta `_respaldo` guarda, en la columna B, datos sueltos para paneles: **B1** fecha del último envío, **B2** nº de ventas, **B3** nº de clientes, **B4** alerta de stock bajo, **B5** margen sugerido (%) y **B6** vida útil del huevo (días). Léelos de ahí, no del JSON de la columna A: con muchos datos el JSON se parte en trozos y la configuración queda fuera del primero.
+- **Caja** es el libro de movimientos del efectivo (el más reciente primero): cada fila es un *Ingreso* o un *Egreso*, nunca los dos. Los saldos se calculan sumando; una anulación aparece como un movimiento contrario, no borra el original. **Cierres** guarda cada conteo del día con lo que debía haber y la diferencia.
+- En **Ventas**, *Medio de cobro* dice si lo cobrado hoy fue en *Efectivo* o por *Transferencia* (vacío en una venta a crédito sin abono inicial). *Abonado en efectivo* y *Abonado por transferencia* separan lo abonado a una venta a crédito según el medio de **cada** abono (un abono anterior a esta función no tiene medio y cuenta como efectivo); la fila Cobrado de **Finanzas** suma contado más abonos por medio. En la app, el selector Efectivo / Transferencia solo se oculta si la caja está apagada y la venta es a crédito sin abono inicial: si se cobra algo se guarda el medio, aunque la caja esté apagada, porque alimenta el Sheet. «Pagó completo» con la caja apagada no pregunta y deja ese abono sin medio. En **Compras**, *Recibió* y *Documento proveedor* identifican quién recibió la mercancía y el número de remisión o factura.
 - *Cantidad* siempre está en unidades; *Panales* solo se llena cuando la venta o la compra fue por panal.
 - Para referenciar toda una columna usa rangos abiertos (por ejemplo `Ventas!F2:F`), porque el número de filas cambia en cada envío.
 

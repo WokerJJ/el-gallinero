@@ -38,6 +38,12 @@ test('paneles · las columnas que leen existen con ese nombre en Code.gs', () =>
   assert.equal(letra('Ventas', 'Abonado'), 'I');
   assert.equal(letra('Ventas', 'Debe'), 'J');
   assert.equal(letra('Ventas', 'Costo unitario'), 'L', 'el costo de lo vendido que usa el panel');
+  assert.equal(letra('Ventas', 'Medio de cobro'), 'M', 'efectivo o transferencia, que separa el panel de Finanzas');
+  assert.match(PANELES, /Ventas!M2:M/);
+  assert.equal(letra('Ventas', 'Abonado en efectivo'), 'N', 'columna añadida al final: los abonos por medio');
+  assert.equal(letra('Ventas', 'Abonado por transferencia'), 'O');
+  assert.match(PANELES, /Ventas!N2:N/);
+  assert.match(PANELES, /Ventas!O2:O/);
   assert.equal(letra('Compras', 'Total'), 'F');
   assert.equal(letra('Compras', 'Vence'), 'G');
   assert.equal(letra('Compras', 'Proveedor'), 'J');

@@ -7,6 +7,8 @@ Aplicación web instalable (PWA) para llevar el control de una distribuidora de 
 - **Inicio:** ventas y ganancia del día, cuánto le deben, alertas de productos por vencer y existencias.
 - **Vender:** ventas de contado o a crédito, con precio sugerido según el margen y abono inicial.
 - **Comprar:** entradas de mercancía con costo promedio ponderado. El formulario se adapta al producto: huevos piden *días en la granja*, productos empacados piden *fecha de vencimiento*.
+- **Caja:** libro del efectivo del negocio. Las ventas y abonos cobrados en efectivo entran solos; las compras y pagos a las fincas pueden salir de la caja; hay gastos e ingresos manuales y cierre del día contando el dinero (con sobrante o faltante). Las ventas se cobran en efectivo o por transferencia.
+- **Recepción de mercancía:** cada compra guarda quién la recibió y el número de remisión o factura del proveedor.
 - **Clientes:** deuda por pedido, abonos (también a la deuda más vieja primero) y cobro por WhatsApp.
 - **Productos:** existencias, precio fijo, pérdidas y una *lista de precios* lista para enviar por WhatsApp.
 - **Facturas:** reportes por día, semana, mes o año; imprimir o exportar a Excel (CSV).
@@ -20,6 +22,7 @@ Aplicación web instalable (PWA) para llevar el control de una distribuidora de 
 - **Seguridad:** todo texto del usuario se escapa antes de pintarse y todo respaldo se valida registro por registro.
 - **Offline:** el service worker responde desde el caché y se actualiza en segundo plano; la app avisa cuando hay una versión nueva.
 - **Frescura:** cada producto declara su control (`granja`, `vencimiento` o `ninguno`); las alertas usan el lote que primero se vence.
+- **Caja:** libro de movimientos que solo se agrega (las anulaciones son contra-asientos), de un solo dispositivo por ahora. El porqué y sus límites están en [docs/adr/0001-caja-libro-de-movimientos.md](docs/adr/0001-caja-libro-de-movimientos.md).
 
 ## Probarla en local
 
