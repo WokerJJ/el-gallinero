@@ -44,25 +44,20 @@ function doPost(e) {
   const claveOk = typeof p.clave === 'string' && igualesCte_(p.clave, CLAVE);
   if (p.accion !== 'login' && !claveOk && typeof p.token !== 'string') return salida_({ ok: false, error: 'Clave incorrecta' });
 
+  // Tope global de entradas por minuto: así un chorro de intentos no ocupa el cerrojo ni deja al dueño sin poder entrar.
+  if (p.accion === 'login' && loginExcedido_()) return salida_({ ok: false, error: MSJ_LOGIN });
+
   const cerrojo = LockService.getScriptLock();
   if (!cerrojo.tryLock(20000)) return salida_({ ok: false, error: 'El Sheet está ocupado, intenta de nuevo' });
   try {
     if (p.accion === 'login') return salida_(login_(p));
     const quien = autenticar_(p);
     if (!quien) return salida_(typeof p.token === 'string' && !claveOk ? { ok: false, error: 'La sesión venció: entra de nuevo', sesion: false } : { ok: false, error: 'Clave incorrecta' });
-    if (!PERMISOS[p.accion]) return salida_({ ok: false, error: 'Acción desconocida' });
-    if (PERMISOS[p.accion].indexOf(quien.rol) < 0) return salida_({ ok: false, error: 'No tienes permiso para esta acción', prohibido: true });
-    if (p.accion === 'ping') return salida_(quien.rol === 'dueno' ? estado_() : { ok: true, rol: 'empleado' });
-    if (p.accion === 'yo') return salida_(yo_(quien));
-    if (p.accion === 'salir') return salida_(salir_(quien));
-    if (p.accion === 'guardar') return salida_(guardar_(p.datos));
-    if (p.accion === 'leer') return salida_(leer_());
-    if (p.accion === 'clientes') return salida_(clientesImportar_());
-    if (p.accion === 'empleadoCrear') return salida_(empleadoCrear_(p));
-    if (p.accion === 'empleadoListar') return salida_(empleadoListar_());
-    if (p.accion === 'empleadoPin') return salida_(empleadoPin_(p));
-    if (p.accion === 'empleadoActivo') return salida_(empleadoActivo_(p));
-    return salida_({ ok: false, error: 'Acción desconocida' });
+    // Solo existe lo que está en la tabla ACCIONES (propiedades propias: «constructor» o «__proto__» no cuentan).
+    const accion = typeof p.accion === 'string' && Object.prototype.hasOwnProperty.call(ACCIONES, p.accion) ? ACCIONES[p.accion] : null;
+    if (!accion) return salida_({ ok: false, error: 'Acción desconocida' });
+    if (accion.roles.indexOf(quien.rol) < 0) return salida_({ ok: false, error: 'No tienes permiso para esta acción', prohibido: true });
+    return salida_(accion.ejecutar(p, quien));
   } catch (err) {
     return salida_({ ok: false, error: String((err && err.message) || err) });
   } finally {
@@ -73,7 +68,7 @@ function doPost(e) {
 /* ---------- Empleados, PIN y sesiones (ADR 0002) ----------
  * El dueño sigue entrando con la CLAVE de arriba. Cada empleado tiene un usuario y un PIN de 4 a 6 dígitos que crea el dueño.
  * El PIN se guarda con sal y hash (nunca en claro) en la pestaña oculta «_empleados»; al entrar se entrega un token que se
- * guarda solo como hash en «_sesiones». Los permisos de cada rol se deciden AQUÍ (PERMISOS), no en la pantalla del teléfono.
+ * guarda solo como hash en «_sesiones». Los permisos de cada rol se deciden AQUÍ (ACCIONES), no en la pantalla del teléfono.
  * Límite conocido: un PIN corto tiene pocas combinaciones; lo protege el bloqueo (MAX_INTENTOS fallos → BLOQUEO_MIN minutos). */
 const HOJA_EMPLEADOS = '_empleados';
 const CAB_EMPLEADOS = ['id', 'usuario', 'nombre', 'sal', 'hash', 'activo', 'intentos', 'bloqueadoHasta', 'creado'];
@@ -83,21 +78,36 @@ const MAX_INTENTOS = 5;
 const BLOQUEO_MIN = 15;
 const SESION_HORAS = 12;
 const MSJ_LOGIN = 'Usuario o PIN incorrecto, o la cuenta está bloqueada';
+const MSJ_PIN = 'El PIN debe tener de 4 a 6 dígitos, sin repetir el mismo número ni ser una escalera (1234)';
+const MAX_LOGIN_MINUTO = 30; // entradas (acertadas o no) que acepta todo el script por minuto
 
-// Qué rol puede pedir cada acción. Lo que no está aquí no existe. El empleado nunca puede guardar, leer ni administrar:
-// mientras el Sheet sea un espejo por reemplazo, un envío suyo pisaría los datos del negocio.
-const PERMISOS = {
-  ping: ['dueno', 'empleado'],
-  yo: ['dueno', 'empleado'],
-  salir: ['dueno', 'empleado'],
-  guardar: ['dueno'],
-  leer: ['dueno'],
-  clientes: ['dueno'],
-  empleadoCrear: ['dueno'],
-  empleadoListar: ['dueno'],
-  empleadoPin: ['dueno'],
-  empleadoActivo: ['dueno']
+// Todo lo que el script sabe hacer (salvo «login», que no exige credenciales): qué roles pueden pedirlo y quién lo ejecuta.
+// Lo que no está aquí no existe. El empleado nunca puede guardar, leer ni administrar: mientras el Sheet sea un espejo
+// por reemplazo, un envío suyo pisaría los datos del negocio.
+const ACCIONES = {
+  ping: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return q.rol === 'dueno' ? estado_() : { ok: true, rol: 'empleado' }; } },
+  yo: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return yo_(q); } },
+  salir: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return salir_(q); } },
+  guardar: { roles: ['dueno'], ejecutar: function (p) { return guardar_(p.datos); } },
+  leer: { roles: ['dueno'], ejecutar: function () { return leer_(); } },
+  clientes: { roles: ['dueno'], ejecutar: function () { return clientesImportar_(); } },
+  empleadoCrear: { roles: ['dueno'], ejecutar: function (p) { return empleadoCrear_(p); } },
+  empleadoListar: { roles: ['dueno'], ejecutar: function () { return empleadoListar_(); } },
+  empleadoPin: { roles: ['dueno'], ejecutar: function (p) { return empleadoPin_(p); } },
+  empleadoActivo: { roles: ['dueno'], ejecutar: function (p) { return empleadoActivo_(p); } }
 };
+
+// Límite global de entradas por minuto, con la caché del script (ventana fija de un minuto). Es de mejor esfuerzo: la lectura y la
+// escritura no son atómicas, así que bajo carga extrema pueden colarse unas pocas de más. Si la caché falla, no bloquea a nadie.
+function loginExcedido_() {
+  try {
+    const cache = CacheService.getScriptCache(), clave = 'login:' + Math.floor(Date.now() / 60000);
+    const n = Number(cache.get(clave)) || 0;
+    if (n >= MAX_LOGIN_MINUTO) return true;
+    cache.put(clave, String(n + 1), 120);
+  } catch (err) { /* sin caché no hay límite, pero tampoco se impide entrar */ }
+  return false;
+}
 
 // Los hashes y tokens llevan una «x» delante: así Sheets nunca los toma por un número ni por una fórmula.
 function sha_(texto) {
@@ -125,6 +135,12 @@ function pinValido_(pin) {
   }
   return !(sube || baja);
 }
+// Fecha guardada como texto ISO (lo normal), como Date o como milisegundos (si se guardó así): siempre devuelve milisegundos.
+function ms_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]') return v.getTime();
+  const t = String(v == null ? '' : v);
+  return /^[0-9]+$/.test(t) ? Number(t) : Date.parse(t); // milisegundos (tabla_ los entrega como texto) o texto ISO
+}
 function usuarioNorm_(u) { return String(u == null ? '' : u).trim().toLowerCase(); }
 
 // Una pestaña oculta con cabecera; se crea sola. Devuelve las filas como objetos (con su número de fila).
@@ -142,7 +158,8 @@ function tabla_(nombre, cab) {
   if (ultima >= 2) {
     h.getRange(2, 1, ultima - 1, cab.length).getValues().forEach(function (v, i) {
       const o = { fila: i + 2 };
-      cab.forEach(function (k, j) { o[k] = v[j]; });
+      // Todo vuelve como texto (Sheets puede haber convertido «true», «1234» o «mar-1»); solo las fechas se dejan tal cual para ms_().
+      cab.forEach(function (k, j) { o[k] = Object.prototype.toString.call(v[j]) === '[object Date]' ? v[j] : String(v[j] == null ? '' : v[j]); });
       filas.push(o);
     });
   }
@@ -150,15 +167,19 @@ function tabla_(nombre, cab) {
 }
 function escribirFila_(t, fila, obj) {
   if (t.h.getMaxRows() < fila) t.h.insertRowsAfter(t.h.getMaxRows(), fila - t.h.getMaxRows());
-  t.h.getRange(fila, 1, 1, t.cab.length).setValues([t.cab.map(function (k) { return obj[k] == null ? '' : obj[k]; })]);
+  // Texto plano ('@') en todas las columnas ANTES de escribir: así Sheets no evalúa «=…» ni convierte «1234», «true» o una fecha ISO.
+  const r = t.h.getRange(fila, 1, 1, t.cab.length);
+  r.setNumberFormat('@');
+  r.setValues([t.cab.map(function (k) { return obj[k] == null ? '' : obj[k]; })]);
 }
 function agregarFila_(t, obj) { escribirFila_(t, Math.max(t.h.getLastRow(), 1) + 1, obj); }
-// Reescribe la tabla solo con las filas que cumplen el filtro.
+// Reescribe la tabla solo con las filas que cumplen el filtro y devuelve la tabla al día (sin volver a leer la hoja).
 function conservarFilas_(t, cumple) {
   const quedan = t.filas.filter(cumple);
-  if (quedan.length === t.filas.length) return;
+  if (quedan.length === t.filas.length) return t;
   if (t.h.getMaxRows() > 1) t.h.getRange(2, 1, t.h.getMaxRows() - 1, t.cab.length).clearContent();
-  quedan.forEach(function (o, i) { escribirFila_(t, i + 2, o); });
+  quedan.forEach(function (o, i) { o.fila = i + 2; escribirFila_(t, i + 2, o); });
+  return { h: t.h, cab: t.cab, filas: quedan };
 }
 const activo_ = function (e) { return String(e.activo) === 'si'; };
 
@@ -168,7 +189,7 @@ function revocarSesiones_(empleadoId) {
 }
 
 function empleadoPublico_(e) {
-  return { id: e.id, usuario: e.usuario, nombre: e.nombre, activo: activo_(e), bloqueado: !!e.bloqueadoHasta && Date.parse(e.bloqueadoHasta) > Date.now() };
+  return { id: e.id, usuario: e.usuario, nombre: e.nombre, activo: activo_(e), bloqueado: !!e.bloqueadoHasta && ms_(e.bloqueadoHasta) > Date.now() };
 }
 
 function empleadoCrear_(p) {
@@ -176,7 +197,7 @@ function empleadoCrear_(p) {
   const usuario = usuarioNorm_(p.usuario);
   if (!nombre) return { ok: false, error: 'Escribe el nombre del empleado' };
   if (!/^[a-z][a-z0-9._-]{2,19}$/.test(usuario)) return { ok: false, error: 'El usuario debe empezar con una letra y tener de 3 a 20 letras, números, punto, guion o guion bajo' };
-  if (!pinValido_(p.pin)) return { ok: false, error: 'El PIN debe tener de 4 a 6 dígitos, sin repetir el mismo número ni ser una escalera (1234)' };
+  if (!pinValido_(p.pin)) return { ok: false, error: MSJ_PIN };
   const t = tabla_(HOJA_EMPLEADOS, CAB_EMPLEADOS);
   if (t.filas.some(function (e) { return String(e.usuario) === usuario; })) return { ok: false, error: 'Ya existe un empleado con ese usuario' };
   const sal = aleatorio_();
@@ -195,7 +216,7 @@ function buscarEmpleado_(t, id) {
 }
 
 function empleadoPin_(p) {
-  if (!pinValido_(p.pin)) return { ok: false, error: 'El PIN debe tener de 4 a 6 dígitos, sin repetir el mismo número ni ser una escalera (1234)' };
+  if (!pinValido_(p.pin)) return { ok: false, error: MSJ_PIN };
   const t = tabla_(HOJA_EMPLEADOS, CAB_EMPLEADOS);
   const e = buscarEmpleado_(t, p.id);
   if (!e) return { ok: false, error: 'No existe ese empleado' };
@@ -225,7 +246,7 @@ function login_(p) {
   for (let i = 0; i < t.filas.length; i++) if (String(t.filas[i].usuario) === usuario) e = t.filas[i];
   if (!e || !activo_(e)) return { ok: false, error: MSJ_LOGIN };
   const ahora = Date.now();
-  if (e.bloqueadoHasta && Date.parse(e.bloqueadoHasta) > ahora) return { ok: false, error: MSJ_LOGIN };
+  if (e.bloqueadoHasta && ms_(e.bloqueadoHasta) > ahora) return { ok: false, error: MSJ_LOGIN };
   if (!igualesCte_(hashPin_(e.sal, pin), e.hash)) {
     e.intentos = (Number(e.intentos) || 0) + 1;
     if (e.intentos >= MAX_INTENTOS) { e.bloqueadoHasta = new Date(ahora + BLOQUEO_MIN * 60000).toISOString(); e.intentos = 0; }
@@ -236,10 +257,9 @@ function login_(p) {
   escribirFila_(t, e.fila, e);
   const token = aleatorio_();
   const vence = new Date(ahora + SESION_HORAS * 3600000).toISOString();
-  const ts = tabla_(HOJA_SESIONES, CAB_SESIONES);
-  conservarFilas_(ts, function (s) { return Date.parse(s.vence) > ahora; }); // se limpian las vencidas
-  const ts2 = tabla_(HOJA_SESIONES, CAB_SESIONES);
-  agregarFila_(ts2, { hashToken: sha_(token), empleadoId: e.id, creada: new Date(ahora).toISOString(), vence: vence });
+  // Una sola lectura de las sesiones: se limpian las vencidas y se agrega la nueva sobre la tabla ya al día.
+  const ts = conservarFilas_(tabla_(HOJA_SESIONES, CAB_SESIONES), function (s) { return ms_(s.vence) > ahora; });
+  agregarFila_(ts, { hashToken: sha_(token), empleadoId: e.id, creada: new Date(ahora).toISOString(), vence: vence });
   return { ok: true, token: token, vence: vence, empleado: { id: e.id, usuario: e.usuario, nombre: e.nombre } };
 }
 
@@ -251,7 +271,7 @@ function autenticar_(p) {
   const ts = tabla_(HOJA_SESIONES, CAB_SESIONES);
   let s = null;
   for (let i = 0; i < ts.filas.length; i++) if (igualesCte_(ts.filas[i].hashToken, hash)) s = ts.filas[i];
-  if (!s || !(Date.parse(s.vence) > Date.now())) return null;
+  if (!s || !(ms_(s.vence) > Date.now())) return null;
   const e = buscarEmpleado_(tabla_(HOJA_EMPLEADOS, CAB_EMPLEADOS), s.empleadoId);
   if (!e || !activo_(e)) return null;
   return { rol: 'empleado', empleado: { id: e.id, usuario: e.usuario, nombre: e.nombre }, hashToken: hash };
@@ -363,15 +383,15 @@ function guardar_(d) {
   const numCfg = function (x, def) { const n = Number(x); return isFinite(n) && n >= 0 ? n : def; };
   escribirTexto_('_respaldo', texto, [ahora, d.ventas.length, d.clientes.length, numCfg(cfg.alerta, 50), numCfg(cfg.margen, 25), numCfg(cfg.vidaUtil, 21)]);
 
-  const prod = {}; d.products.forEach(function (p) { prod[p.id] = p; });
-  const cli = {}; d.clientes.forEach(function (c) { cli[c.id] = c; });
+  const prod = Object.create(null); d.products.forEach(function (p) { prod[p.id] = p; });
+  const cli = Object.create(null); d.clientes.forEach(function (c) { cli[c.id] = c; });
   const provs = d.proveedores || [];
   const neg = (d.config && d.config.negocio) || {};
   const prefijo = neg.prefijo ? neg.prefijo + '-' : '';
   const prefijoCompra = neg.prefijoCompra ? neg.prefijoCompra + '-' : '';
   const numeroComprobanteCompra = function (n) { return n ? prefijoCompra + String(n).padStart(6, '0') : ''; };
   const numeroComprobante = function (n) { return n ? prefijo + String(n).padStart(6, '0') : ''; };
-  const prv = {}; provs.forEach(function (x) { prv[x.id] = x; });
+  const prv = Object.create(null); provs.forEach(function (x) { prv[x.id] = x; });
   const debeCompra = function (e) { return e.proveedorId ? Math.max(0, e.total - (e.pagado == null ? e.total : e.pagado)) : 0; };
   const nombreProd = function (id) { return prod[id] ? prod[id].name : '(eliminado)'; };
   const porFechaDesc = function (a, b) { return String(b.fecha).localeCompare(String(a.fecha)); };
@@ -416,7 +436,7 @@ function guardar_(d) {
     }));
 
   // Caja: libro de movimientos del efectivo (el más reciente primero) y cierres del día.
-  const origenCaja = { apertura: 'Saldo inicial', venta: 'Venta', abono: 'Abono de cliente', compra: 'Compra', pago: 'Pago a proveedor', manual: 'Manual', anulacion: 'Anulación', ajuste: 'Ajuste de cierre' };
+  const origenCaja = Object.assign(Object.create(null), { apertura: 'Saldo inicial', venta: 'Venta', abono: 'Abono de cliente', compra: 'Compra', pago: 'Pago a proveedor', manual: 'Manual', anulacion: 'Anulación', ajuste: 'Ajuste de cierre' });
   escribirHoja_('Caja', ['Fecha', 'Concepto', 'Ingreso', 'Egreso', 'Origen', 'Registró'],
     (d.movimientos || []).slice().sort(function (a, b) { return b.id - a.id; }).map(function (m) {
       return [m.fecha, m.concepto || '', m.tipo === 'ingreso' ? m.monto : '', m.tipo === 'egreso' ? m.monto : '', origenCaja[m.origen] || m.origen || '', m.por || ''];

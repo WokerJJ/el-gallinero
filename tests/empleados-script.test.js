@@ -4,7 +4,7 @@
    el bloqueo funciona, y el empleado no puede hacer nada de lo que solo es del dueño. */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cargarScript, post, plano } = require('./arnes-script');
+const { cargarScript, post, plano, CODIGO } = require('./arnes-script');
 
 const CLAVE = 'k-secreta';
 const MSJ = 'Usuario o PIN incorrecto, o la cuenta está bloqueada';
@@ -236,4 +236,125 @@ test('compatibilidad · sin empleados el dueño con su clave funciona igual que 
   assert.equal(duenoPost(s, { accion: 'ping' }).tieneDatos, false);
   assert.equal(duenoPost(s, { accion: 'guardar', datos: datosMinimos }).ok, true);
   assert.equal(s.libro.get('_empleados'), undefined, 'no se crea ninguna pestaña de empleados si no se usan');
+});
+
+/* ---------- acciones: una sola tabla (BUG-005, EVA-002) ---------- */
+test('acciones · cada acción de la tabla tiene roles y manejador, y «Acción desconocida» sale de un solo sitio', () => {
+  const s = cargarScript();
+  assert.equal(s.run('Object.keys(ACCIONES).length > 0 && Object.keys(ACCIONES).every(k => typeof ACCIONES[k].ejecutar === "function" && ACCIONES[k].roles.length > 0)'), true);
+  assert.equal((CODIGO.match(/Acción desconocida/g) || []).length, 1, 'el mensaje existe en un solo punto del script');
+});
+test('acciones · nombres heredados de Object (constructor, __proto__, toString…) o que no son texto son «Acción desconocida», sin filtrar errores internos', () => {
+  const s = cargarScript();
+  crear(s);
+  const { token } = entrar(s);
+  for (const accion of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf', 7, null, ['guardar'], { a: 1 }]) {
+    assert.equal(duenoPost(s, { accion }).error, 'Acción desconocida', `dueño: ${JSON.stringify(accion)}`);
+    assert.equal(comoEmpleado(s, token, { accion }).error, 'Acción desconocida', `empleado: ${JSON.stringify(accion)}`);
+  }
+});
+test('acciones · un origen de caja con nombre heredado («constructor») se copia como texto, no como función', () => {
+  const s = cargarScript();
+  const r = duenoPost(s, { accion: 'guardar', datos: { ...datosMinimos, movimientos: [{ id: 1, fecha: '2026-11-01', tipo: 'ingreso', monto: 5, origen: 'constructor' }] } });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(s.libro.get('Caja').celda(2, 5), 'constructor');
+});
+
+/* ---------- tipos de Sheets (BUG-003, BUG-006, EVA-003) ---------- */
+test('tipos · un nombre que parece fórmula o número se guarda y se devuelve tal cual', () => {
+  const s = cargarScript();
+  for (const [usuario, nombre] of [['ana', '=1+1'], ['beto', '1234'], ['cris', '+57 300'], ['dina', 'true']]) {
+    const r = crear(s, { usuario, nombre });
+    assert.equal(r.empleado.nombre, nombre);
+    const l = duenoPost(s, { accion: 'empleadoListar' }).empleados.find(e => e.usuario === usuario);
+    assert.equal(l.nombre, nombre, `listado de ${usuario}`);
+    assert.equal(entrar(s, { usuario }).empleado.nombre, nombre, `login de ${usuario}`);
+  }
+});
+test('tipos · un usuario que Sheets tomaría por booleano o fecha (true, mar-1) sigue entrando y se devuelve como texto', () => {
+  const s = cargarScript();
+  for (const usuario of ['true', 'false', 'mar-1']) {
+    assert.equal(crear(s, { usuario }).ok, true, usuario);
+    const r = entrar(s, { usuario });
+    assert.equal(r.ok, true, `login de ${usuario}`);
+    assert.equal(r.empleado.usuario, usuario);
+    assert.equal(typeof duenoPost(s, { accion: 'empleadoListar' }).empleados.find(e => e.usuario === usuario).usuario, 'string');
+    assert.equal(crear(s, { usuario }).ok, false, `${usuario} no se puede repetir`);
+  }
+});
+test('tipos · las fechas de las pestañas internas se guardan como texto (no se vuelven Date)', () => {
+  const s = cargarScript();
+  crear(s);
+  entrar(s);
+  const emp = s.libro.get('_empleados'), ses = s.libro.get('_sesiones');
+  assert.equal(typeof emp.celda(2, colEmp.creado), 'string', 'creado');
+  assert.equal(typeof ses.celda(2, 3), 'string', 'creada');
+  assert.equal(typeof ses.celda(2, 4), 'string', 'vence');
+  for (let i = 0; i < 5; i++) entrar(s, { pin: '1357' });
+  assert.equal(typeof emp.celda(2, colEmp.bloqueadoHasta), 'string', 'bloqueadoHasta');
+});
+test('tipos · si una fecha ya volvió como Date o como número, se entiende igual', () => {
+  const s = cargarScript();
+  crear(s);
+  const { token } = entrar(s);
+  const ses = s.libro.get('_sesiones');
+  ses.celdas.set('2,4', new Date(Date.now() + 3600000));
+  assert.equal(comoEmpleado(s, token, { accion: 'yo' }).ok, true, 'Date vigente');
+  ses.celdas.set('2,4', new Date(Date.now() - 1000));
+  assert.equal(comoEmpleado(s, token, { accion: 'yo' }).sesion, false, 'Date vencida');
+  ses.celdas.set('2,4', Date.now() + 3600000);
+  assert.equal(comoEmpleado(s, token, { accion: 'yo' }).ok, true, 'milisegundos');
+  s.libro.get('_empleados').celdas.set(`2,${colEmp.bloqueadoHasta}`, new Date(Date.now() + 600000));
+  assert.equal(duenoPost(s, { accion: 'empleadoListar' }).empleados[0].bloqueado, true, 'bloqueo como Date');
+  assert.equal(entrar(s).ok, false);
+});
+
+/* ---------- límite global de intentos de login (BUG-004) ---------- */
+test('login · pasado el límite por minuto se rechaza con el mismo mensaje, sin tomar el cerrojo ni leer hojas', () => {
+  const s = cargarScript();
+  crear(s);
+  for (let i = 0; i < 30; i++) entrar(s, { usuario: 'nadie' });
+  const antes = { ...s.contadores };
+  const r = entrar(s); // ni con el PIN correcto
+  assert.deepEqual(plano(r), { ok: false, error: MSJ });
+  assert.deepEqual(s.contadores, antes, 'sin cerrojo ni lectura de pestañas');
+  assert.equal(duenoPost(s, { accion: 'ping' }).ok, true, 'el dueño sigue entrando con su clave');
+  assert.equal(s.contadores.cerrojo, antes.cerrojo + 1);
+});
+
+/* ---------- EVA-007: ping del dueño y precedencia de credenciales ---------- */
+test('ping · la forma exacta de la respuesta del dueño, con datos y sin ellos', () => {
+  const s = cargarScript();
+  assert.deepEqual(plano(duenoPost(s, { accion: 'ping' })), { ok: true, tieneDatos: false });
+  duenoPost(s, { accion: 'guardar', datos: { ...datosMinimos, ventas: [{ id: 1 }], clientes: [{ id: 'c' }] } });
+  assert.deepEqual(Object.keys(duenoPost(s, { accion: 'ping' })).sort(), ['actualizado', 'clientes', 'ok', 'tieneDatos', 'ventas']);
+});
+test('credenciales · clave mala con token válido es el empleado; token vencido con clave buena es el dueño; clave mala con token vencido avisa que venció', () => {
+  const s = cargarScript();
+  crear(s);
+  const { token } = entrar(s);
+  assert.equal(post(s, { clave: 'mala', token, accion: 'yo' }).rol, 'empleado', 'la clave mala no pisa un token válido');
+  s.libro.get('_sesiones').celdas.set('2,4', new Date(Date.now() - 1000).toISOString());
+  assert.equal(post(s, { clave: CLAVE, token, accion: 'yo' }).rol, 'dueno', 'la clave correcta manda sobre un token vencido');
+  const vencida = post(s, { clave: 'mala', token, accion: 'yo' });
+  assert.equal(vencida.sesion, false);
+  assert.match(vencida.error, /venció/);
+  const sinToken = post(s, { clave: 'mala', accion: 'yo' });
+  assert.equal(sinToken.error, 'Clave incorrecta');
+  assert.equal(sinToken.sesion, undefined, 'sin token no es «sesión vencida»');
+});
+
+/* ---------- EVA-008 ---------- */
+test('login · lee la pestaña de sesiones una sola vez aunque haya vencidas que limpiar', () => {
+  const s = cargarScript();
+  crear(s);
+  entrar(s); entrar(s);
+  const ses = s.libro.get('_sesiones');
+  ses.celdas.set('2,4', new Date(Date.now() - 1000).toISOString()); // una vencida y una vigente
+  let lecturas = 0;
+  const getRange = ses.getRange.bind(ses);
+  ses.getRange = (...a) => { const r = getRange(...a), gv = r.getValues; r.getValues = () => { lecturas++; return gv.call(r); }; return r; };
+  assert.equal(entrar(s).ok, true);
+  assert.equal(lecturas, 1);
+  assert.equal(ses.getLastRow(), 3, 'quedan la vigente y la nueva');
 });
