@@ -106,6 +106,7 @@ const SANEAR = {
     o.abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })).filter(a => a.monto > 0) : mal();
     if (typeof r.recibidoPor === 'string' && r.recibidoPor.trim()) o.recibidoPor = r.recibidoPor.trim().slice(0, 60);
     if (typeof r.documentoProveedor === 'string' && r.documentoProveedor.trim()) o.documentoProveedor = r.documentoProveedor.trim().slice(0, 40);
+    if (typeof r.por === 'string' && r.por.trim()) o.por = r.por.trim().slice(0, 40);
     if (numeroOk(r.numero)) o.numero = r.numero; // número del comprobante de compra (fuera de rango: se descarta, la compra se conserva)
     return o;
   },
@@ -114,7 +115,7 @@ const SANEAR = {
     const cantidad = rNum(r.cantidad), precio = rNum(r.precio), costoUnitario = rNum(r.costoUnitario, 0), total = rNum(r.total, cantidad * precio);
     const tipoPago = r.tipoPago == null ? 'contado' : (r.tipoPago === 'contado' || r.tipoPago === 'credito' ? r.tipoPago : mal());
     const abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto), ...(medioOk(a.medio) ? { medio: a.medio } : {}) })) : mal(); // medio: cómo entró ese abono
-    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(numeroOk(r.numero) ? { numero: r.numero } : {}), ...(medioOk(r.medio) ? { medio: r.medio } : {}) };
+    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(numeroOk(r.numero) ? { numero: r.numero } : {}), ...(medioOk(r.medio) ? { medio: r.medio } : {}), ...(typeof r.por === 'string' && r.por.trim() ? { por: r.por.trim().slice(0, 40) } : {}) };
   },
 };
 function sanearConfig(c) {
@@ -215,6 +216,8 @@ function guardar() {
 /* Muta, guarda y, si guardar falla, devuelve la memoria al estado anterior.
    El aviso de éxito solo sale si se guardó (el de error lo pone guardar()). */
 function aplicar(mutar, mensajeOk) {
+  // Con el inicio de sesión pedido y la sesión vencida (o cerrada) nada se registra: ni como «Dueño» por descuido (ver «Acceso»).
+  if (acceso.exigir && !sesionVigente()) { cerrarHoja(false); aviso('Tu sesión terminó: entra de nuevo', true); pintar(); return false; }
   const previo = clonar(estado());
   mutar();
   if (guardar()) { if (mensajeOk) aviso(mensajeOk); return true; }
@@ -340,7 +343,7 @@ const ICONOS = {
 const icono = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS[n]}</svg>`;
 
 const NAV = [['inicio', 'Inicio'], ['vender', 'Vender'], ['comprar', 'Comprar'], ['clientes', 'Clientes'], ['mas', 'Más']];
-const SUBVISTAS = ['caja', 'productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
+const SUBVISTAS = ['caja', 'productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes', 'empleados'];
 
 function aviso(msg, error = false) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -415,13 +418,16 @@ const VISTAS = {};
 const MONTAR = {};
 function navegar(v) { if (location.hash !== '#/' + v) location.hash = '#/' + v; else pintar(); }
 function pintar() {
+  if (loginPendiente()) { cerrarHoja(false); vistaActual = 'entrada'; pantallaEntrada(); window.scrollTo(0, 0); return; } // una hoja abierta no sobrevive a la sesión
   const v = (location.hash.replace('#/', '') || 'inicio');
   vistaActual = VISTAS[v] ? v : 'inicio';
+  if (VISTAS_DUENO.has(vistaActual) && !esDueno()) vistaActual = 'inicio'; // el empleado no entra a las vistas del dueño ni escribiendo la dirección
   const activo = SUBVISTAS.includes(vistaActual) ? 'mas' : vistaActual;
   $('#nav').innerHTML = NAV.map(([id, t]) => `<button data-act="ir" data-v="${id}" class="${id === activo ? 'on' : ''}" ${id === activo ? 'aria-current="page"' : ''}>${icono(id)}<span>${t}</span></button>`).join('');
   $('#vista').innerHTML = VISTAS[vistaActual]();
   const montar = MONTAR[vistaActual];
   if (montar) montar();
+  ocultarSoloDueno();
   window.scrollTo(0, 0);
 }
 const repintar = () => { const y = window.scrollY; pintar(); window.scrollTo(0, y); };
@@ -432,6 +438,7 @@ const opcionesProductos = (sel, conStock = true) => products.map(p => `<option v
 
 /* =============== Inicio =============== */
 VISTAS.inicio = () => {
+  const dueno = esDueno(); // el empleado no ve ganancias, deudas ni la semana
   const h = hoy();
   const vh = ventas.filter(v => v.fecha === h);
   const total = vh.reduce((s, v) => s + v.total, 0);
@@ -467,27 +474,27 @@ VISTAS.inicio = () => {
       <button class="btn" data-act="ir" data-v="vender">${icono('vender')}Vender</button>
       <button class="btn btn-sun" data-act="ir" data-v="comprar">${icono('comprar')}Llegó mercancía</button>
     </div>
-    ${recordatorio}
+    ${dueno ? recordatorio : ''}
     <section class="card"><h3>Hoy</h3>
       <div class="stats">
         <div class="stat sun"><div class="n">${money(total)}</div><div class="l">Vendido hoy</div></div>
-        <div class="stat teal"><div class="n ${gan < 0 ? 'neg' : ''}">${money(gan)}</div><div class="l">Ganancia hoy</div></div>
+        ${dueno ? `<div class="stat teal"><div class="n ${gan < 0 ? 'neg' : ''}">${money(gan)}</div><div class="l">Ganancia hoy</div></div>` : ''}
         <div class="stat"><div class="n">${num(vh.reduce((s, v) => s + v.cantidad, 0))}</div><div class="l">Unidades vendidas</div></div>
-        <div class="stat ${deuda > 0 ? 'red' : ''}"><div class="n">${money(deuda)}</div><div class="l">Me deben</div></div>
+        ${dueno ? `<div class="stat ${deuda > 0 ? 'red' : ''}"><div class="n">${money(deuda)}</div><div class="l">Me deben</div></div>` : ''}
       </div>
-      ${deuda > 0 ? '<button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="clientes">Ver quién me debe</button>' : ''}
-      ${deudaProv > 0 ? `<div class="stat red" style="margin-top:12px"><div class="n">${money(deudaProv)}</div><div class="l">Debo a proveedores</div></div><button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="proveedores">Ver cuentas por pagar</button>` : ''}
+      ${dueno && deuda > 0 ? '<button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="clientes">Ver quién me debe</button>' : ''}
+      ${dueno && deudaProv > 0 ? `<div class="stat red" style="margin-top:12px"><div class="n">${money(deudaProv)}</div><div class="l">Debo a proveedores</div></div><button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="proveedores">Ver cuentas por pagar</button>` : ''}
     </section>
     ${cajaActiva() ? `<section class="card"><h3>Caja</h3><div class="stats"><div class="stat teal"><div class="n">${money(saldoCaja())}</div><div class="l">En caja ahora</div></div><div class="stat"><div class="n">${movimientos.filter(m => m.fecha === hoy()).length}</div><div class="l">Movimientos hoy</div></div></div><button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="caja">Ver caja</button></section>` : ''}
     <section class="card"><h3>Frescura</h3>${alertasHtml}</section>
     <section class="card"><h3>En bodega</h3><div class="list">${stockHtml}</div>
       <button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="productos">Productos e inventario</button></section>
-    <section class="card"><h3>Esta semana</h3>
+    ${dueno ? `<section class="card"><h3>Esta semana</h3>
       <div class="stats">
         <div class="stat"><div class="n">${money(totSem)}</div><div class="l">Vendido</div></div>
         <div class="stat"><div class="n ${ganSem < 0 ? 'neg' : 'pos'}">${money(ganSem)}</div><div class="l">Ganancia</div></div>
       </div>
-      <button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="graficos">Ver gráficos</button></section>`;
+      <button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="graficos">Ver gráficos</button></section>` : ''}`;
 };
 
 /* =============== Vender =============== */
@@ -612,7 +619,7 @@ MONTAR.vender = () => {
       let pagado = total; const abonos = [];
       if (tipoPago === 'credito') { const ab = Math.min(redondear(abonoIn), total); pagado = ab; if (ab > 0) abonos.push({ fecha, monto: ab, medio: medioCobro }); }
       const idVenta = nuevoId();
-      ventas.push({ id: idVenta, productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos, ...(enPanal ? { panales: n, precioPanal: precioIn } : {}), ...(medioVenta ? { medio: medioVenta } : {}) });
+      ventas.push({ id: idVenta, productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos, ...(enPanal ? { panales: n, precioPanal: precioIn } : {}), ...(medioVenta ? { medio: medioVenta } : {}), ...registroPor() });
       if (medioVenta === 'efectivo') anotarCaja('ingreso', pagado, `Venta · ${enPanal ? num(n) + ' panales' : num(cantidad)} ${p.name}`, 'venta', idVenta, 'venta');
     }, `Venta guardada · ${money(total)}`);
     memoVenta = { productoId: p.id, clienteId: clienteId || '', pago: tipoPago, medio: medioCobro };
@@ -654,7 +661,7 @@ VISTAS.comprar = () => {
       </div>
       ${cajaActiva() ? `<p class="muted seg-nota">Lo que pagas hoy sale de:</p>${segHTML('eorigen', [['caja', 'Caja (efectivo)'], ['otro', 'Banco / otro']], memoCompra.origen || 'caja', 'Pago con')}` : ''}
       <div class="row2">
-        <label class="field"><span>Recibió la mercancía</span><input id="e-recibio" type="text" maxlength="60" placeholder="Nombre" value="${esc(memoCompra.recibio || '')}" autocomplete="off"></label>
+        <label class="field"><span>Recibió la mercancía</span><input id="e-recibio" type="text" maxlength="60" placeholder="Nombre" value="${esc(memoCompra.recibio || (empleadoActual() ? empleadoActual().nombre : ''))}" autocomplete="off"></label>
         <label class="field"><span>N.° de remisión o factura</span><input id="e-doc" type="text" maxlength="40" placeholder="Opcional" autocomplete="off"></label>
       </div>
       <label class="field"><span>Notas (opcional)</span><input id="e-notas" type="text" placeholder="Ej: lote de la mañana"></label>
@@ -729,7 +736,7 @@ MONTAR.comprar = () => {
       if (hoyPaga >= total) return aviso('Pagaste todo: elige «Pagué todo»', true);
       pagado = hoyPaga; if (hoyPaga > 0) abonos.push({ fecha, monto: hoyPaga });
     }
-    const recibidoPor = $('#e-recibio').value.trim().slice(0, 60), documentoProveedor = $('#e-doc').value.trim().slice(0, 40);
+    const recibidoPor = ($('#e-recibio').value.trim() || (empleadoActual() ? empleadoActual().nombre : '')).slice(0, 60), documentoProveedor = $('#e-doc').value.trim().slice(0, 40);
     const origenPago = (f.querySelector('input[name=eorigen]:checked') || {}).value === 'otro' ? 'otro' : 'caja';
     const salidaCaja = cajaActiva() && origenPago === 'caja' ? pagado : 0;
     if (salidaCaja > saldoCaja() && !(await confirmar({ titulo: 'La caja no alcanza', texto: `En la caja hay ${money(saldoCaja())} y esta compra paga ${money(salidaCaja)} con dinero de la caja. ¿Registrarla igual? La caja quedaría en ${money(redondear(saldoCaja() - salidaCaja))}.`, ok: 'Sí, registrar' }))) return;
@@ -739,7 +746,7 @@ MONTAR.comprar = () => {
       p.stock = stockPrevio + cantidad;
       p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 10000) / 10000 : costo;
       p.lastCost = costo;
-      entradas.push({ id: idEntrada, productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, ...(recibidoPor ? { recibidoPor } : {}), ...(documentoProveedor ? { documentoProveedor } : {}), costoPrevio, lastCostPrevio });
+      entradas.push({ id: idEntrada, productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, ...(recibidoPor ? { recibidoPor } : {}), ...(documentoProveedor ? { documentoProveedor } : {}), costoPrevio, lastCostPrevio, ...registroPor() });
       anotarCaja('egreso', salidaCaja, `Compra · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${proveedorId && proveedor(proveedorId) ? ' · ' + proveedor(proveedorId).nombre : ''}`, 'compra', idEntrada, 'compra');
     }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${parcial ? ' · debes ' + money(total - pagado) : ''}`);
     memoCompra = { proveedorId: proveedorId || '', pago: parcial ? 'parcial' : 'todo', origen: origenPago, recibio: recibidoPor };
@@ -1273,12 +1280,188 @@ function imprimirComprobanteCompra(id) {
   imprimirDocumento();
 }
 
+/* =============== Acceso: empleados y roles (ADR 0002) =============== */
+/* Por defecto nadie inicia sesión y todo funciona como siempre. Cuando el dueño activa «Pedir inicio de sesión» en este
+   teléfono, hay que entrar como empleado (usuario + PIN, que valida el script) o como dueño (la clave del script).
+   OJO: aquí los roles ordenan la pantalla y evitan errores, pero la protección de verdad está en el script. Un teléfono
+   compartido guarda la clave del dueño, así que quien sepa abrir las herramientas del navegador podría saltarse estos límites.
+   La sesión vive en el dispositivo (eg_acceso) y nunca viaja dentro de los respaldos. */
+const CLAVE_ACCESO = 'eg_acceso';
+let acceso = { exigir: false, sesion: null, url: '' };
+function leerAcceso() {
+  const vacio = { exigir: false, sesion: null, url: '' };
+  try {
+    const v = JSON.parse(localStorage.getItem(CLAVE_ACCESO));
+    if (!v || typeof v !== 'object') return vacio;
+    const s = v.sesion && typeof v.sesion === 'object' ? v.sesion : null;
+    let sesion = null;
+    if (s && s.rol === 'dueno') sesion = { rol: 'dueno' };
+    else if (s && s.rol === 'empleado' && typeof s.token === 'string' && s.token && typeof s.nombre === 'string' && typeof s.usuario === 'string' && typeof s.vence === 'string') sesion = { rol: 'empleado', usuario: s.usuario.slice(0, 20), nombre: s.nombre.slice(0, 40), token: s.token, vence: s.vence };
+    return { exigir: v.exigir === true, sesion, url: typeof v.url === 'string' && URL_SCRIPT_RE.test(v.url) ? v.url : '' };
+  } catch { return vacio; }
+}
+function guardarAcceso() { try { localStorage.setItem(CLAVE_ACCESO, JSON.stringify(acceso)); } catch { /* sin espacio: la sesión dura hasta cerrar la app */ } }
+const sesionVigente = () => { const s = acceso.sesion; return !!s && (s.rol === 'dueno' || Date.parse(s.vence) > Date.now()); };
+const loginPendiente = () => acceso.exigir && !sesionVigente();
+const esDueno = () => !acceso.exigir || (!!acceso.sesion && acceso.sesion.rol === 'dueno');
+const empleadoActual = () => (acceso.exigir && acceso.sesion && acceso.sesion.rol === 'empleado' && sesionVigente() ? acceso.sesion : null);
+const usuarioActual = () => { const e = empleadoActual(); return e ? e.nombre : 'Dueño'; };
+// Quién registró algo. Solo se anota cuando se pide inicio de sesión: sin él los datos quedan exactamente como antes.
+const registroPor = () => (acceso.exigir ? { por: usuarioActual() } : {});
+
+// Cada acción de la app está en una de las dos listas (una prueba lo exige): lo que cualquiera puede hacer y lo que solo es del dueño.
+const ACCIONES_LIBRES = new Set(['ir', 'cerrar', 'paso', 'comprobante', 'comprobante-compra', 'imprimir-doc', 'caja-gasto', 'caja-ingreso', 'caja-dia', 'cliente-nuevo', 'cliente-ver', 'cliente-wa', 'abonar', 'pagar', 'pagar-proveedor', 'pagar-compra-completa', 'lista-precios', 'lp-copiar', 'lp-wa', 'imprimir', 'entrada-modo', 'sesion-salir']);
+const ACCIONES_DUENO = new Set(['graf-tipo', 'caja-cierre', 'caja-anular', 'proveedor-nuevo', 'proveedor-ver', 'proveedor-editar', 'cliente-editar', 'venta-anular', 'entrada-anular', 'ajuste-anular', 'prod-nuevo', 'prod-editar', 'perdida', 'periodo', 'ref', 'csv', 'json-export', 'json-import', 'borrar-todo', 'sheets-enviar', 'sheets-restaurar', 'sheets-clientes', 'sheets-desconectar', 'sheets-script', 'sheets-ayuda', 'emp-nuevo', 'emp-pin', 'emp-activo', 'emp-exigir', 'emp-recargar']);
+const VISTAS_DUENO = new Set(['productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes', 'empleados']);
+// Quita de la pantalla lo que el empleado no puede usar (botones de anular, enlaces a vistas del dueño…).
+function ocultarSoloDueno() {
+  if (esDueno()) return;
+  document.querySelectorAll('#vista [data-act]').forEach(el => {
+    const a = el.dataset.act;
+    if (ACCIONES_DUENO.has(a) || (a === 'ir' && VISTAS_DUENO.has(el.dataset.v))) el.remove();
+  });
+}
+
+let modoEntrada = 'empleado', urlTecleada = ''; // el enlace tecleado sobrevive al cambio entre Empleado y Dueño
+function pantallaEntrada() {
+  $('#nav').innerHTML = '';
+  const urlConocida = (sync && sync.url) || acceso.url;
+  const emp = modoEntrada === 'empleado';
+  const campoUrl = urlConocida ? '' : '<label class="field"><span>Enlace de la aplicación web</span><input id="en-url" type="url" inputmode="url" enterkeyhint="next" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" value="' + esc(urlTecleada) + '"><div class="hint">Te lo da el dueño.</div></label>';
+  $('#vista').innerHTML = `
+    <div class="view-head"><h2>Entrar</h2></div>
+    <div class="seg seg-botones" role="group" aria-label="Cómo entras">
+      <button type="button" class="seg-btn" data-act="entrada-modo" data-m="empleado" aria-pressed="${emp}">Empleado</button>
+      <button type="button" class="seg-btn" data-act="entrada-modo" data-m="dueno" aria-pressed="${!emp}">Dueño</button>
+    </div>
+    ${emp ? `<form id="f-entrada" class="card" novalidate><h3>Soy empleado</h3>${campoUrl}
+      <label class="field"><span>Usuario</span><input id="en-usuario" type="text" enterkeyhint="next" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="20"></label>
+      <label class="field"><span>PIN</span><input id="en-pin" class="pin" type="password" inputmode="numeric" enterkeyhint="go" pattern="[0-9]*" maxlength="6" autocomplete="current-password"><div class="hint">De 4 a 6 números.</div></label>
+      <button class="btn btn-teal" type="submit">Entrar</button></form>`
+    : `<form id="f-entrada" class="card" novalidate><h3>Soy el dueño</h3>${campoUrl}
+      <label class="field"><span>Clave</span><input id="en-clave" type="password" enterkeyhint="go" autocomplete="current-password"><div class="hint">La que pusiste dentro del script de Google Sheets.</div></label>
+      <button class="btn btn-teal" type="submit">Entrar</button></form>`}`;
+  const primero = campoUrl ? $('#en-url') : $(emp ? '#en-usuario' : '#en-clave');
+  if (primero) primero.focus();
+  $('#f-entrada').addEventListener('submit', e => {
+    e.preventDefault();
+    const url = $('#en-url') ? $('#en-url').value : '';
+    if (emp) entrarEmpleado(url, $('#en-usuario').value, $('#en-pin').value); else entrarDueno(url, $('#en-clave').value);
+  });
+}
+async function entrarEmpleado(url, usuario, pin) {
+  url = (String(url || '').trim() || (sync && sync.url) || acceso.url || '');
+  usuario = String(usuario || '').trim().toLowerCase(); pin = String(pin || '');
+  if (!URL_SCRIPT_RE.test(url)) return aviso('Escribe el enlace de la aplicación web que te dio el dueño', true);
+  if (!usuario || !/^\d{4,6}$/.test(pin)) return aviso('Escribe tu usuario y tu PIN (de 4 a 6 números)', true);
+  let j;
+  try { j = await postScript(url, { accion: 'login', usuario, pin }); } catch (e) {
+    // Un script anterior a los empleados no conoce «login» y lo toma por una llamada sin clave.
+    if (e && e.message === 'Clave incorrecta') return aviso('Actualiza el script de Google Sheets (Implementar → Nueva versión): el tuyo es anterior a los empleados', true);
+    return aviso(mensajeSync(e), true);
+  }
+  if (!j || typeof j.token !== 'string' || !j.token || !j.empleado || typeof j.empleado.nombre !== 'string' || typeof j.vence !== 'string') return aviso('Respuesta no válida del script', true);
+  acceso = { exigir: true, url, sesion: { rol: 'empleado', usuario: String(j.empleado.usuario || usuario).slice(0, 20), nombre: j.empleado.nombre.slice(0, 40), token: j.token, vence: j.vence } };
+  guardarAcceso(); pintar(); aviso('Hola, ' + acceso.sesion.nombre);
+  vigilarSesion();
+}
+async function entrarDueno(url, clave) {
+  clave = String(clave || '').trim();
+  if (!clave) return aviso('Escribe la clave', true);
+  if (sync && sync.clave) { // en el teléfono del dueño la clave ya está guardada: se compara sin necesitar internet
+    if (clave !== sync.clave) return aviso('Clave incorrecta', true);
+  } else {
+    url = String(url || '').trim() || acceso.url;
+    if (!URL_SCRIPT_RE.test(url)) return aviso('Escribe el enlace de la aplicación web', true);
+    let j;
+    try { j = await postScript(url, { clave, accion: 'yo' }); } catch (e) { return aviso(mensajeSync(e), true); }
+    if (!j || j.rol !== 'dueno') return aviso('Clave incorrecta', true);
+    acceso.url = url;
+  }
+  acceso.sesion = { rol: 'dueno' }; guardarAcceso(); pintar(); aviso('Entraste como dueño');
+}
+async function cerrarSesion() {
+  const s = acceso.sesion, url = (sync && sync.url) || acceso.url;
+  acceso.sesion = null; guardarAcceso();
+  if (s && s.rol === 'empleado' && url) postScript(url, { accion: 'salir', token: s.token }, 8000).catch(() => { /* el token vence solo */ });
+  pintar();
+}
+// Al abrir la app: si el script ya no reconoce la sesión (la desactivaron o cambiaron el PIN), se sale.
+async function validarSesion() {
+  const e = empleadoActual(), url = (sync && sync.url) || acceso.url;
+  if (!e || !url || (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
+  try { await postScript(url, { accion: 'yo', token: e.token }, 10000); } catch (err) {
+    if (err && err.sesion === false && acceso.sesion && acceso.sesion.token === e.token) { acceso.sesion = null; guardarAcceso(); pintar(); aviso('Tu sesión terminó: entra de nuevo', true); }
+  }
+}
+/* La revocación (desactivar al empleado, cambiar su PIN) es de mejor esfuerzo: se nota al abrir la app, al volver a ella y cada
+   REVALIDAR_MS mientras esté abierta con sesión de empleado. Sin red no se cierra nada, y un reloj atrasado alarga la sesión local. */
+let REVALIDAR_MS = 5 * 60000, vigia = null;
+function vigilarSesion() {
+  clearTimeout(vigia); vigia = null;
+  if (!empleadoActual()) return;
+  vigia = setTimeout(() => { validarSesion().finally(vigilarSesion); }, REVALIDAR_MS);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') validarSesion(); });
+const tarjetaSesion = () => (acceso.exigir ? `<div class="card"><h3>Sesión</h3><p class="muted lead">${empleadoActual() ? `Entraste como ${esc(empleadoActual().nombre)}.` : 'Entraste como dueño.'}</p><button class="btn btn-ghost" data-act="sesion-salir">Cerrar sesión</button></div>` : '');
+
+/* Pantalla del dueño: el equipo vive en el Sheet (pestaña oculta), aquí solo se administra. */
+let empleadosLista = null, empleadosCargando = false, empleadosError = '';
+async function cargarEmpleados() {
+  empleadosCargando = true; empleadosError = '';
+  try { empleadosLista = (await llamarSheet({ accion: 'empleadoListar' })).empleados || []; } catch (e) {
+    empleadosError = /acci[oó]n desconocida/i.test(String((e && e.message) || e)) ? 'Tu script es de una versión anterior: actualízalo (Implementar → Administrar implementaciones → Editar → Nueva versión)' : 'No se pudo leer el equipo: ' + mensajeSync(e);
+    empleadosLista = [];
+  } finally { empleadosCargando = false; }
+  if (vistaActual === 'empleados') repintar();
+}
+VISTAS.empleados = () => {
+  const conectado = !!(sync && sync.listo);
+  const lista = empleadosLista === null ? '<p class="muted">Cargando…</p>'
+    : empleadosError ? `<div class="alert danger">${esc(empleadosError)}</div>`
+    : !empleadosLista.length ? '<p class="empty">Aún no hay empleados. Crea el primero.</p>'
+    : `<div class="list">${empleadosLista.map(e => `<div class="row"><div class="main"><div class="t">${esc(e.nombre)}</div><div class="s">${esc(e.usuario)} · <span class="badge ${e.bloqueado ? 'out' : e.activo ? 'ok' : 'low'}">${e.bloqueado ? 'Bloqueado por intentos fallidos' : e.activo ? 'Activo' : 'Desactivado'}</span></div></div>
+        <div class="r emp-acc"><button class="btn btn-sm btn-ghost" data-act="emp-pin" data-id="${esc(e.id)}">Cambiar PIN</button> <button class="btn btn-sm btn-ghost" data-act="emp-activo" data-id="${esc(e.id)}" data-a="${e.activo ? '0' : '1'}">${e.activo ? 'Desactivar' : 'Activar'}</button></div></div>`).join('')}</div>`;
+  return `
+    ${cabecera('Empleados', 'mas')}
+    ${!conectado ? '<div class="card"><p class="muted">Los empleados y sus PIN viven en tu Google Sheet. Conéctalo primero en Más → Google Sheets.</p></div>' : `
+    <div class="card"><h3>Equipo</h3>${lista}
+      <div class="btn-row"><button class="btn btn-teal" data-act="emp-nuevo">+ Nuevo empleado</button><button class="btn btn-ghost" data-act="emp-recargar">Actualizar</button></div></div>
+    <div class="card"><h3>Inicio de sesión en este teléfono</h3>
+      <p class="muted lead">${acceso.exigir ? 'Activo: al abrir la app se pide usuario y PIN, o tu clave de dueño.' : 'Apagado: quien abra la app tiene todos los permisos. Actívalo para que cada empleado entre con su PIN.'}</p>
+      <button class="btn ${acceso.exigir ? 'btn-ghost' : ''}" data-act="emp-exigir">${acceso.exigir ? 'Dejar de pedir inicio de sesión' : 'Pedir inicio de sesión'}</button></div>`}
+    <div class="card"><h3>Qué puede hacer un empleado</h3>
+      <p class="muted">Vender, registrar la llegada de mercancía, cobrar abonos, pagar desde la caja y anotar gastos. No ve ganancias ni deudas a proveedores y no puede anular, cerrar la caja, cambiar precios, borrar ni tocar los respaldos. Todo lo que registre queda con su nombre.</p></div>`;
+};
+MONTAR.empleados = () => { if (sync && sync.listo && empleadosLista === null && !empleadosCargando) cargarEmpleados(); };
+
+function formEmpleado(id) {
+  const nuevo = !id, e = nuevo ? null : (empleadosLista || []).find(x => x.id === id);
+  if (!nuevo && !e) return;
+  hoja(nuevo ? 'Nuevo empleado' : `Cambiar el PIN de ${e.nombre}`, `<form id="f-emp" novalidate>
+    ${nuevo ? `<label class="field"><span>Nombre</span><input id="em-nombre" type="text" maxlength="40" autocomplete="off"></label>
+    <label class="field"><span>Usuario</span><input id="em-usuario" type="text" maxlength="20" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"><div class="hint">Para entrar. Empieza con una letra y sin espacios (por ejemplo: luis).</div></label>` : ''}
+    <label class="field"><span>PIN</span><input id="em-pin" class="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password"><div class="hint">De 4 a 6 números, sin repetir el mismo ni escalera (1234).</div></label>
+    <label class="field"><span>Repite el PIN</span><input id="em-pin2" class="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password"></label>
+    <button class="btn btn-teal" type="submit">${nuevo ? 'Crear empleado' : 'Guardar PIN'}</button></form>`, b => {
+    $('#f-emp', b).addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const pin = $('#em-pin', b).value, pin2 = $('#em-pin2', b).value;
+      if (!/^\d{4,6}$/.test(pin)) return aviso('El PIN debe tener de 4 a 6 números', true);
+      if (pin !== pin2) return aviso('Los dos PIN no coinciden', true);
+      const cuerpo = nuevo ? { accion: 'empleadoCrear', nombre: $('#em-nombre', b).value, usuario: $('#em-usuario', b).value, pin } : { accion: 'empleadoPin', id, pin };
+      try { await llamarSheet(cuerpo); } catch (err) { return aviso(mensajeSync(err), true); }
+      cerrarHoja(); empleadosLista = null; aviso(nuevo ? 'Empleado creado' : 'PIN cambiado');
+      if (vistaActual === 'empleados') repintar();
+    });
+  });
+}
+
 /* =============== Caja =============== */
 /* Libro de movimientos del EFECTIVO del negocio: ventas y abonos cobrados en efectivo, compras y pagos a proveedores hechos con
    dinero de la caja, gastos e ingresos manuales. Es un libro: nada se edita ni se borra, una anulación agrega un movimiento
-   contrario. Empieza a contar cuando se activa la caja con su saldo inicial. Cada movimiento guarda quién lo registró (por
-   ahora siempre «Dueño»; el login de empleados lo llenará). */
-const usuarioActual = () => 'Dueño';
+   contrario. Empieza a contar cuando se activa la caja con su saldo inicial. Cada movimiento guarda quién lo registró
+   (usuarioActual(): «Dueño», o el empleado que entró; ver «Acceso»). */
 const cajaActiva = () => config.cajaActiva === true;
 const firmaMov = m => (m.tipo === 'ingreso' ? 1 : -1) * m.monto;
 const saldoCaja = () => redondear(movimientos.reduce((s, m) => s + firmaMov(m), 0));
@@ -1332,6 +1515,7 @@ const badgeCierre = c => (c.diferencia === 0 ? '<span class="badge ok">Cuadró</
 
 let cajaDia = '';
 VISTAS.caja = () => {
+  if (!cajaActiva() && !esDueno()) return `${cabecera('Caja', 'mas')}<div class="card"><p class="muted">La caja todavía no está activada. Pídele al dueño que la active.</p></div>`;
   if (!cajaActiva()) return `
     ${cabecera('Caja', 'mas')}
     <form id="f-caja-ini" class="card" novalidate>
@@ -1372,6 +1556,7 @@ MONTAR.caja = () => {
   const f = $('#f-caja-ini');
   if (f) f.addEventListener('submit', e => {
     e.preventDefault();
+    if (!esDueno()) return aviso('Solo el dueño puede activar la caja', true);
     const saldo = leerNum($('#ci-saldo').value);
     if (!(saldo >= 0 && enRango(saldo))) return aviso('Escribe cuánto dinero hay en la caja (puede ser 0)', true);
     aplicar(() => { config.cajaActiva = true; anotarCaja('ingreso', saldo, 'Saldo inicial de la caja', 'apertura', null); }, 'Caja activada');
@@ -1436,9 +1621,10 @@ function formCierreCaja(previo = {}) {
 VISTAS.mas = () => `
   ${cabecera('Más')}
   <div class="card menu"><div class="list">
-    ${[['caja', 'vender', 'Caja', 'Efectivo, gastos y cierre del día'], ['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
+    ${[['caja', 'vender', 'Caja', 'Efectivo, gastos y cierre del día'], ['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['empleados', 'clientes', 'Empleados', 'Usuarios y PIN para tu equipo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
       .map(([v, i, t, s]) => `<button class="row" data-act="ir" data-v="${v}"><span class="ico">${icono(i)}</span><span class="main"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">&rsaquo;</span></button>`).join('')}
   </div></div>
+  ${tarjetaSesion()}
   <div class="card"><h3>Instalar en el celular</h3>
     <p class="muted"><strong>iPhone:</strong> abre esta página en Safari, toca Compartir y luego «Agregar a pantalla de inicio».<br><strong>Android:</strong> en Chrome, menú ⋮ y «Instalar aplicación».</p></div>`;
 
@@ -1719,16 +1905,18 @@ function mensajeSync(e) {
   if (/failed to fetch|networkerror|load failed/i.test(m)) return 'no hay conexión, o el enlace no está publicado para «Cualquier persona»';
   return m;
 }
-function llamarSheet(cuerpo, ms = 30000) {
+// Una llamada al script. Sin clave ni sesión el script la rechaza; `.sesion === false` en el error significa «la sesión venció».
+function postScript(url, cuerpo, ms = 30000) {
   let t;
   // text/plain evita la verificación previa (CORS preflight), que Apps Script no responde.
-  const envio = fetch(sync.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ clave: sync.clave, ...cuerpo }) }).then(r => r.json());
+  const envio = fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(cuerpo) }).then(r => r.json());
   const limite = new Promise((_, rechazar) => { t = setTimeout(() => rechazar(new Error('timeout')), ms); });
   return Promise.race([envio, limite]).finally(() => clearTimeout(t)).then(j => {
-    if (!j || !j.ok) throw new Error((j && j.error) || 'respuesta no válida del script');
+    if (!j || !j.ok) { const err = new Error((j && j.error) || 'respuesta no válida del script'); if (j && j.sesion === false) err.sesion = false; if (j && j.prohibido) err.prohibido = true; throw err; }
     return j;
   });
 }
+const llamarSheet = (cuerpo, ms = 30000) => postScript(sync.url, { clave: sync.clave, ...cuerpo }, ms);
 function pintarEstadoSync() {
   const el = $('#sync-estado');
   if (!el || !sync) return;
@@ -1927,6 +2115,28 @@ function recalcularCosto(p, lista) {
 const ACCIONES = {
   ir: el => navegar(el.dataset.v),
   cerrar: () => cerrarHoja(),
+  'entrada-modo': el => { if ($('#en-url')) urlTecleada = $('#en-url').value; modoEntrada = el.dataset.m === 'dueno' ? 'dueno' : 'empleado'; pantallaEntrada(); },
+  'sesion-salir': () => cerrarSesion(),
+  'emp-nuevo': () => formEmpleado(null),
+  'emp-pin': el => formEmpleado(el.dataset.id),
+  'emp-recargar': () => { empleadosLista = null; repintar(); },
+  'emp-activo': async el => {
+    const id = el.dataset.id, activar = el.dataset.a === '1', e = (empleadosLista || []).find(x => x.id === id);
+    if (!e) return;
+    if (!activar && !(await confirmar({ titulo: 'Desactivar empleado', texto: `${e.nombre} ya no podrá entrar y su sesión se cierra.`, ok: 'Desactivar', peligro: true }))) return;
+    try { await llamarSheet({ accion: 'empleadoActivo', id, activo: activar }); } catch (err) { return aviso(mensajeSync(err), true); }
+    empleadosLista = null; aviso(activar ? 'Empleado activado' : 'Empleado desactivado'); repintar();
+  },
+  'emp-exigir': async () => {
+    if (!acceso.exigir) {
+      if (!(await confirmar({ titulo: 'Pedir inicio de sesión', texto: 'Este teléfono pedirá usuario y PIN (o tu clave de dueño) al abrir la app. Tú sigues dentro como dueño. Para dejar de pedirlo, vuelve a esta pantalla.', ok: 'Activar' }))) return;
+      acceso = { exigir: true, url: sync && sync.url ? sync.url : acceso.url, sesion: { rol: 'dueno' } };
+    } else {
+      if (!(await confirmar({ titulo: 'Dejar de pedir inicio de sesión', texto: 'Cualquiera que abra la app en este teléfono tendrá todos los permisos.', ok: 'Dejar de pedir', peligro: true }))) return;
+      acceso = { exigir: false, url: acceso.url, sesion: null };
+    }
+    guardarAcceso(); repintar();
+  },
   paso: el => { const i = $('#' + el.dataset.t); i.value = Math.max(1, (parseInt(i.value, 10) || 0) + parseInt(el.dataset.d, 10)); i.dispatchEvent(new Event('input', { bubbles: true })); },
   'graf-tipo': el => { grafTipo = el.dataset.t; repintar(); },
   comprobante: el => abrirComprobante(Number(el.dataset.id)),
@@ -2070,7 +2280,11 @@ const ACCIONES = {
 };
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
-  if (el && ACCIONES[el.dataset.act]) ACCIONES[el.dataset.act](el);
+  if (!el || !ACCIONES[el.dataset.act]) return;
+  const a = el.dataset.act;
+  if (loginPendiente() && a !== 'entrada-modo') return; // sin entrar no se hace nada
+  if (ACCIONES_DUENO.has(a) && !esDueno()) return aviso('Solo el dueño puede hacer esto', true);
+  ACCIONES[a](el);
 });
 
 /* =============== Arranque =============== */
@@ -2085,10 +2299,13 @@ function mostrarActualizacion() {
 if (errorArranque) pantallaRecuperacion(errorArranque);
 else {
   sync = leerSync();
+  acceso = leerAcceso();
   window.addEventListener('afterprint', () => document.body.classList.remove('imprime-doc'));
   window.addEventListener('online', () => { if (sync && sync.listo && sync.pendiente) programarSync(); });
   if (sync && sync.listo && sync.pendiente) programarSync();
   try { pintar(); if (avisoArranque) aviso(avisoArranque, true); } catch (e) { pantallaRecuperacion(e); }
+  validarSesion();
+  vigilarSesion();
   if (navigator.serviceWorker && location.protocol.startsWith('http')) {
     const sw = navigator.serviceWorker, habiaControlador = !!sw.controller;
     sw.addEventListener('controllerchange', () => { if (habiaControlador) mostrarActualizacion(); });

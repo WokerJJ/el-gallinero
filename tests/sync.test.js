@@ -118,7 +118,7 @@ test('Sheets · el script copia las pestañas sin fórmulas peligrosas y exige l
   const fs = require('node:fs'), path = require('node:path');
   const codigo = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
   assert.match(codigo, /\^\[=\+\\-@\]/, 'neutraliza = + - @ al inicio');
-  assert.match(codigo, /p\.clave !== CLAVE/);
+  assert.match(codigo, /igualesCte_\(p\.clave, CLAVE\)/);
   assert.match(codigo, /CAMBIA-ESTA-CLAVE/);
 });
 
