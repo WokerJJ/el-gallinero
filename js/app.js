@@ -1362,8 +1362,11 @@ async function entrarEmpleado(url, usuario, pin) {
   }
   if (!j || typeof j.token !== 'string' || !j.token || !j.empleado || typeof j.empleado.nombre !== 'string' || typeof j.vence !== 'string') return aviso('Respuesta no válida del script', true);
   acceso = { exigir: true, url, sesion: { rol: 'empleado', usuario: String(j.empleado.usuario || usuario).slice(0, 20), nombre: j.empleado.nombre.slice(0, 40), token: j.token, vence: j.vence } };
-  guardarAcceso(); pintar(); aviso('Hola, ' + acceso.sesion.nombre);
+  guardarAcceso();
+  if (!sync) { sync = { url, clave: '', listo: true, pendiente: false, ultimo: null, base: '', conflicto: false, error: '' }; guardarSync(); } // el teléfono del empleado también sincroniza, con su token
+  pintar(); aviso('Hola, ' + acceso.sesion.nombre);
   vigilarSesion();
+  sincronizarAlAbrir();
 }
 async function entrarDueno(url, clave) {
   clave = String(clave || '').trim();
@@ -1379,6 +1382,7 @@ async function entrarDueno(url, clave) {
     acceso.url = url;
   }
   acceso.sesion = { rol: 'dueno' }; guardarAcceso(); pintar(); aviso('Entraste como dueño');
+  sincronizarAlAbrir();
 }
 async function cerrarSesion() {
   const s = acceso.sesion, url = (sync && sync.url) || acceso.url;
@@ -1402,7 +1406,14 @@ function vigilarSesion() {
   if (!empleadoActual()) return;
   vigia = setTimeout(() => { validarSesion().finally(vigilarSesion); }, REVALIDAR_MS);
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') validarSesion(); });
+let ocultoDesde = 0, REPOSO_MS = 300000; // tras 5 minutos fuera de la app, al volver se mira si el Sheet cambió
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') ocultoDesde = Date.now();
+  else {
+    validarSesion();
+    if (ocultoDesde && Date.now() - ocultoDesde > REPOSO_MS) { ocultoDesde = 0; sincronizarAlAbrir(); }
+  }
+});
 const tarjetaSesion = () => (acceso.exigir ? `<div class="card"><h3>Sesión</h3><p class="muted lead">${empleadoActual() ? `Entraste como ${esc(empleadoActual().nombre)}.` : 'Entraste como dueño.'}</p><button class="btn btn-ghost" data-act="sesion-salir">Cerrar sesión</button></div>` : '');
 
 /* Pantalla del dueño: el equipo vive en el Sheet (pestaña oculta), aquí solo se administra. */
@@ -1613,6 +1624,7 @@ function formCierreCaja(previo = {}) {
         if (diferencia !== 0) anotarCaja(diferencia > 0 ? 'ingreso' : 'egreso', Math.abs(diferencia), diferencia > 0 ? 'Sobrante en el cierre' : 'Faltante en el cierre', 'ajuste', null);
       }, diferencia === 0 ? 'Caja cerrada: cuadró' : `Caja cerrada: ${diferencia > 0 ? 'sobran' : 'faltan'} ${money(Math.abs(diferencia))}`);
       cerrarHoja(); repintar();
+      await enviarAlCerrar();
     });
   });
 }
@@ -1783,7 +1795,7 @@ async function exportarJSON() {
   if (await entregarArchivo(`el-gallinero-respaldo-${hoy()}.json`, JSON.stringify(datos), 'application/json')) { aplicar(() => { config.ultimoRespaldo = hoy(); }, 'Respaldo listo'); if (vistaActual === 'respaldo') repintar(); }
 }
 // Valida TODO antes de tocar nada; guarda el estado previo en eg_prev; recién entonces reemplaza.
-async function restaurarTexto(texto) {
+async function restaurarTexto(texto, { auto = false } = {}) {
   let d;
   try { d = JSON.parse(texto); } catch { return aviso('El archivo no es un respaldo válido', true); }
   if (!d || d.app !== 'el-gallinero' || !Array.isArray(d.products) || !Array.isArray(d.ventas) || !Array.isArray(d.entradas) || !Array.isArray(d.clientes)) return aviso('El archivo no es un respaldo de El Gallinero', true);
@@ -1791,9 +1803,9 @@ async function restaurarTexto(texto) {
   const { datos, errores, recuperados } = limpiar(d);
   if (errores.length) return aviso(`El respaldo tiene ${errores.length} registro(s) con datos inválidos (${errores.slice(0, 3).join(', ')}). No se restauró nada.`, true);
   migrar(datos);
-  if (!(await confirmar({ titulo: 'Restaurar respaldo', texto: `Se reemplazarán TODOS los datos de este teléfono por los del respaldo (${datos.ventas.length} ventas, ${datos.clientes.length} clientes). ¿Continuar?`, ok: 'Restaurar', peligro: true }))) return;
+  if (!auto && !(await confirmar({ titulo: 'Restaurar respaldo', texto: `Se reemplazarán TODOS los datos de este teléfono por los del respaldo (${datos.ventas.length} ventas, ${datos.clientes.length} clientes). ¿Continuar?`, ok: 'Restaurar', peligro: true }))) return;
   try { localStorage.setItem(CLAVE_PREV, JSON.stringify(estado())); } catch { return aviso('No hay espacio para guardar una copia de lo actual. No se restauró nada.', true); }
-  const ok = aplicar(() => poner(datos), recuperados ? `Datos restaurados. Se recuperaron ${recuperados} proveedor(es) sin nombre: ponles nombre en Proveedores.` : 'Datos restaurados');
+  const ok = aplicar(() => poner(datos), recuperados ? `Datos restaurados. Se recuperaron ${recuperados} proveedor(es) sin nombre: ponles nombre en Proveedores.` : (auto ? 'Datos al día desde el Sheet' : 'Datos restaurados'));
   repintar();
   return ok;
 }
@@ -1891,8 +1903,8 @@ const URL_SCRIPT_RE = /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/
 function leerSync() {
   try {
     const v = JSON.parse(localStorage.getItem(CLAVE_SYNC));
-    if (!v || typeof v !== 'object' || !URL_SCRIPT_RE.test(v.url || '') || typeof v.clave !== 'string' || !v.clave) return null;
-    return { url: v.url, clave: v.clave, listo: v.listo === true, pendiente: !!v.pendiente, ultimo: typeof v.ultimo === 'string' ? v.ultimo : null, error: typeof v.error === 'string' ? v.error : '' };
+    if (!v || typeof v !== 'object' || !URL_SCRIPT_RE.test(v.url || '') || typeof v.clave !== 'string') return null; // la clave va vacía en el teléfono de un empleado: él entra con su token
+    return { url: v.url, clave: v.clave, listo: v.listo === true, pendiente: !!v.pendiente, ultimo: typeof v.ultimo === 'string' ? v.ultimo : null, base: typeof v.base === 'string' ? v.base : '', conflicto: v.conflicto === true, error: typeof v.error === 'string' ? v.error : '' };
   } catch { return null; }
 }
 function guardarSync() {
@@ -1912,24 +1924,33 @@ function postScript(url, cuerpo, ms = 30000) {
   const envio = fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(cuerpo) }).then(r => r.json());
   const limite = new Promise((_, rechazar) => { t = setTimeout(() => rechazar(new Error('timeout')), ms); });
   return Promise.race([envio, limite]).finally(() => clearTimeout(t)).then(j => {
-    if (!j || !j.ok) { const err = new Error((j && j.error) || 'respuesta no válida del script'); if (j && j.sesion === false) err.sesion = false; if (j && j.prohibido) err.prohibido = true; throw err; }
+    if (!j || !j.ok) { const err = new Error((j && j.error) || 'respuesta no válida del script'); if (j && j.sesion === false) err.sesion = false; if (j && j.prohibido) err.prohibido = true; if (j && j.conflicto) { err.conflicto = true; err.version = String(j.version || ''); } throw err; }
     return j;
   });
 }
-const llamarSheet = (cuerpo, ms = 30000) => postScript(sync.url, { clave: sync.clave, ...cuerpo }, ms);
+// Con qué se identifica este teléfono ante el script: la clave del dueño, o el token del empleado que entró.
+function credencial() { if (sync && sync.clave) return { clave: sync.clave }; const e = empleadoActual(); return e ? { token: e.token } : null; }
+function llamarSheet(cuerpo, ms = 30000) {
+  const c = credencial();
+  if (!c) return Promise.reject(new Error('Entra con tu usuario y PIN para sincronizar'));
+  return postScript(sync.url, { ...c, ...cuerpo }, ms);
+}
 function pintarEstadoSync() {
   const el = $('#sync-estado');
   if (!el || !sync) return;
   el.textContent = syncEnCurso ? 'Enviando…'
+    : sync.conflicto ? 'El Sheet cambió y este teléfono tiene cambios sin enviar: pulsa «Enviar ahora» para elegir cuáles conservar.'
     : sync.error ? `No se pudo enviar (${sync.error}). Se reintentará solo.`
     : sync.pendiente ? 'Hay cambios pendientes de enviar.'
     : sync.ultimo ? `Al día · último envío ${new Date(sync.ultimo).toLocaleString('es-CO')}` : 'Todavía no se ha enviado nada.';
 }
 // Tras cada guardado se espera unos segundos (por si siguen más cambios) y se envía todo junto.
+let sinEnviar = false, sincronizando = false; // sinEnviar: mientras se carga del Sheet no se reenvía lo recién cargado
 function programarSync() {
   try {
-    if (!sync || !sync.listo) return;
+    if (!sync || !sync.listo || sinEnviar || !credencial()) return;
     sync.pendiente = true; guardarSync();
+    if (sync.conflicto) return; // hay que decidir qué datos conservar antes de volver a enviar
     clearTimeout(syncTimer);
     syncTimer = setTimeout(() => { enviarSheet(false); }, 4000);
   } catch { /* la sincronización nunca debe impedir guardar */ }
@@ -1937,25 +1958,71 @@ function programarSync() {
 async function enviarSheet(manual) {
   if (!sync) return false;
   if (syncEnCurso) { if (!manual) programarSync(); return false; }
+  if (sync.conflicto && !manual) return false;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) { if (manual) aviso('Sin internet: se enviará al volver la conexión', true); return false; }
   syncEnCurso = true; pintarEstadoSync();
+  let conflicto = null;
   try {
-    await llamarSheet({ accion: 'guardar', datos: { app: 'el-gallinero', version: SCHEMA, exportado: new Date().toISOString(), ...estado() } });
-    sync.ultimo = new Date().toISOString(); sync.pendiente = false; sync.error = ''; guardarSync();
+    // `base` es la versión del Sheet que este teléfono cargó por última vez: si otro guardó después, el script no pisa nada.
+    const j = await llamarSheet({ accion: 'guardar', base: sync.base || '', datos: { app: 'el-gallinero', version: SCHEMA, exportado: new Date().toISOString(), ...estado() } });
+    sync.ultimo = new Date().toISOString(); sync.pendiente = false; sync.error = ''; sync.conflicto = false;
+    if (typeof j.version === 'string') sync.base = j.version;
+    guardarSync();
     if (manual) aviso('Enviado a Google Sheets');
     return true;
   } catch (e) {
-    sync.pendiente = true; sync.error = mensajeSync(e); guardarSync();
-    if (manual) aviso('No se pudo enviar: ' + sync.error, true);
-    else { clearTimeout(syncTimer); syncTimer = setTimeout(() => { enviarSheet(false); }, 60000); }
+    sync.pendiente = true; guardarSync();
+    if (e && e.conflicto) { sync.error = ''; conflicto = e.version || ''; guardarSync(); clearTimeout(syncTimer); }
+    else {
+      sync.error = mensajeSync(e); guardarSync();
+      if (manual) aviso('No se pudo enviar: ' + sync.error, true);
+      else { clearTimeout(syncTimer); syncTimer = setTimeout(() => { enviarSheet(false); }, 60000); }
+    }
     return false;
-  } finally { syncEnCurso = false; pintarEstadoSync(); }
+  } finally { syncEnCurso = false; pintarEstadoSync(); if (conflicto !== null) resolverConflicto(conflicto); }
 }
-async function traerDelSheet() {
+// Carga el Sheet en este teléfono. `auto`: sin pedir confirmación (se usa al abrir la app, cuando no hay cambios sin enviar).
+async function traerDelSheet(opc = {}) {
   if (!sync) return false;
   let j;
   try { j = await llamarSheet({ accion: 'leer' }); } catch (e) { aviso('No se pudo leer el Sheet: ' + mensajeSync(e), true); return false; }
-  return !!(await restaurarTexto(j.texto));
+  sinEnviar = true;
+  let ok;
+  try { ok = !!(await restaurarTexto(j.texto, { auto: opc.auto === true })); } finally { sinEnviar = false; }
+  if (ok) {
+    if (typeof j.version === 'string') sync.base = j.version;
+    sync.pendiente = false; sync.conflicto = false; sync.error = ''; guardarSync();
+  }
+  return ok;
+}
+// Alguien guardó en el Sheet después de la última carga de este teléfono, y este teléfono también tiene cambios sin enviar.
+async function resolverConflicto(versionRemota) {
+  sync.conflicto = true; guardarSync(); pintarEstadoSync();
+  const r = await elegir('El Sheet cambió', 'Alguien guardó datos en el Sheet desde la última vez que este teléfono lo cargó, y este teléfono también tiene cambios sin enviar. ¿Cuáles conservas? Lo que no elijas no se borra del todo: el teléfono guarda una copia (eg_prev) y el Sheet, la anterior.',
+    [{ v: 'sheet', t: 'Usar los del Sheet' }, { v: 'telefono', t: 'Usar los de este teléfono', cls: 'btn-ghost' }, { v: 'luego', t: 'Decidir después', cls: 'btn-ghost' }]);
+  if (r === 'sheet') await traerDelSheet({ auto: true });
+  else if (r === 'telefono') { sync.base = versionRemota || sync.base; sync.conflicto = false; guardarSync(); await enviarSheet(true); }
+  else { aviso('Quedó pendiente: elige en Más → Google Sheets → Enviar ahora', true); pintarEstadoSync(); }
+}
+// Al abrir la app, al entrar y al volver tras un rato: si otro guardó en el Sheet y aquí no hay nada sin enviar, se carga solo.
+async function sincronizarAlAbrir() {
+  if (!sync || !sync.listo || !credencial() || sincronizando || syncEnCurso) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (document.querySelector('.sheet-wrap')) return; // con un diálogo abierto no se cambia lo que se está haciendo
+  sincronizando = true;
+  try {
+    let info;
+    try { info = await llamarSheet({ accion: 'ping' }, 15000); } catch { return; }
+    if (typeof info.version !== 'string' || !info.tieneDatos || info.version === sync.base) return; // script anterior, Sheet vacío o ya al día
+    if (sync.pendiente) await resolverConflicto(info.version); else await traerDelSheet({ auto: true });
+  } finally { sincronizando = false; }
+}
+// Cerrar la caja envía al Sheet de forma obligatoria: si no llega, se avisa con claridad (el cierre queda hecho y se reintenta solo).
+async function enviarAlCerrar() {
+  if (!sync || !sync.listo || !credencial()) return;
+  if (await enviarSheet(true)) return;
+  if (sync.conflicto) return; // ya se le preguntó qué datos conservar
+  await elegir('El cierre no llegó al Sheet', `La caja quedó cerrada en este teléfono, pero NO se pudo enviar al Sheet (${sync.error || 'sin conexión'}). Se reintentará solo cuando haya conexión; mientras tanto, los otros teléfonos no ven este cierre.`, [{ v: 'ok', t: 'Entendido' }]);
 }
 // Diálogo con varias opciones (confirmar() solo admite sí/no).
 function elegir(titulo, texto, opciones) {
@@ -2305,6 +2372,7 @@ else {
   if (sync && sync.listo && sync.pendiente) programarSync();
   try { pintar(); if (avisoArranque) aviso(avisoArranque, true); } catch (e) { pantallaRecuperacion(e); }
   validarSesion();
+  if (!loginPendiente()) sincronizarAlAbrir();
   vigilarSesion();
   if (navigator.serviceWorker && location.protocol.startsWith('http')) {
     const sw = navigator.serviceWorker, habiaControlador = !!sw.controller;
