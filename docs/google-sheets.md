@@ -115,4 +115,4 @@ Si quieres que tu equipo entre con un PIN, el script guarda a los empleados en d
 3. Activa **Pedir inicio de sesión** en el teléfono que compartirán. El empleado entra con su usuario y su PIN; tú entras con tu clave.
 4. Si alguien olvida su PIN o su cuenta se bloquea (5 fallos seguidos, 15 minutos), cámbiale el PIN desde la misma pantalla.
 
-Un empleado no ve ganancias ni deudas a proveedores y no puede anular, cerrar la caja, cambiar precios, borrar ni tocar los respaldos. **Comparte el Sheet solo contigo**: los empleados no necesitan acceso al archivo.
+En la pantalla del teléfono compartido, un empleado no ve ganancias ni deudas a proveedores y no puede anular, cerrar la caja, cambiar precios, borrar ni tocar los respaldos. Esos límites ordenan la pantalla; la barrera real es el script, que a un empleado solo le deja preguntar quién es y salir. **Todavía no puede usar su propio teléfono con los datos del negocio** (la sincronización llega en la entrega 2): hoy el uso real es un teléfono o tableta compartido. **Comparte el Sheet solo contigo**: los empleados no necesitan acceso al archivo.
