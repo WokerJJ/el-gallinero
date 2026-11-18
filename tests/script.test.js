@@ -323,3 +323,19 @@ test('script · Compras lleva quién recibió y el documento del proveedor', () 
   assert.equal(c.celda(2, 14), 'Luis Pérez');
   assert.equal(c.celda(2, 15), 'F-1234');
 });
+
+test('script · Ventas separa lo abonado a crédito por medio (los abonos sin medio cuentan como efectivo)', () => {
+  const { hoja } = guardarS(datosS({ ventas: [
+    { id: 1, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-12', clienteId: 'c1', tipoPago: 'credito', pagado: 3000, medio: 'transferencia',
+      abonos: [{ fecha: '2026-11-12', monto: 1000, medio: 'transferencia' }, { fecha: '2026-11-13', monto: 1500, medio: 'efectivo' }, { fecha: '2026-11-14', monto: 500 }] },
+    { id: 2, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-11', clienteId: null, tipoPago: 'contado', pagado: 6000, medio: 'efectivo' },
+  ] }));
+  const v = hoja('Ventas');
+  assert.equal(v.celda(1, 14), 'Abonado en efectivo');
+  assert.equal(v.celda(1, 15), 'Abonado por transferencia');
+  assert.equal(v.celda(2, 14), 2000, 'efectivo: 1500 + el abono sin medio de 500');
+  assert.equal(v.celda(2, 15), 1000);
+  assert.equal(v.celda(3, 14), '', 'una venta de contado no tiene abonos');
+  assert.equal(v.celda(3, 15), '');
+  assert.equal(v.celda(1, 13), 'Medio de cobro', 'las columnas anteriores no se movieron');
+});

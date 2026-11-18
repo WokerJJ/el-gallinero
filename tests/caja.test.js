@@ -27,6 +27,13 @@ async function elegirOpcion(a, i) {
   (b.listeners.click || []).forEach(f => f({ target: { closest: () => ({ dataset: { i: String(i) } }) } }));
   await esperar();
 }
+async function devolverMonto(a, monto) {
+  await esperar();
+  const b = a.hoja().querySelector('.sheet-body');
+  b.querySelector('#pm-monto').value = String(monto);
+  b.querySelector('#f-monto').listeners.submit[0]({ preventDefault() {} });
+  await esperar();
+}
 async function comprar(a, { cant = 10, costo = 12500, pago = 'todo', pagado = '', prov = 'f1', origen = 'caja', recibio = '', doc = '' } = {}) {
   a.ir('comprar');
   a.q('#e-prod').value = 'campo'; a.q('#e-cant').value = String(cant); a.q('#e-costo').value = String(costo);
@@ -243,8 +250,8 @@ test('caja · anular dos veces la misma venta no revierte dos veces', async () =
   const a = conCaja();
   await vender(a, { cant: '10', precio: '600' });
   const v = a.ev('ventas[0]');
-  a.run(`revertirCaja(${v.id}, ['venta', 'abono'], 'x')`);
-  a.run(`revertirCaja(${v.id}, ['venta', 'abono'], 'x')`);
+  a.run(`revertirCaja(${v.id}, 'venta', 'x')`);
+  a.run(`revertirCaja(${v.id}, 'venta', 'x')`);
   assert.equal(saldo(a), 100000);
   assert.equal(movs(a).filter(m => m.origen === 'anulacion').length, 1);
 });
@@ -256,7 +263,7 @@ test('caja · anular una compra pagada con la caja: si el proveedor devolvió el
   const id = a.run('entradas[0].id');
   const p = a.run(`ACCIONES['entrada-anular']({ dataset: { id: '${id}' } })`);
   await esperar(30); await responder(a, true);
-  await elegirOpcion(a, 0); await p;
+  await devolverMonto(a, 40000); await p;
   assert.equal(saldo(a), 100000);
   assert.equal(a.run('proveedores[0].saldoFavor'), undefined, 'si volvió a la caja no queda saldo a favor');
 });
@@ -267,7 +274,7 @@ test('caja · anular una compra pagada con la caja: si no devolvió, queda saldo
   const id = a.run('entradas[0].id');
   const p = a.run(`ACCIONES['entrada-anular']({ dataset: { id: '${id}' } })`);
   await esperar(30); await responder(a, true);
-  await elegirOpcion(a, 1); await p;
+  await devolverMonto(a, 0); await p;
   assert.equal(saldo(a), 60000);
   assert.equal(a.run('proveedores[0].saldoFavor'), 40000);
 });
@@ -278,7 +285,7 @@ test('caja · cancelar la pregunta del proveedor deja todo como estaba', async (
   const id = a.run('entradas[0].id');
   const p = a.run(`ACCIONES['entrada-anular']({ dataset: { id: '${id}' } })`);
   await esperar(30); await responder(a, true);
-  await elegirOpcion(a, 2); await p;
+  await responder(a, false); await p;
   assert.equal(a.run('entradas.length'), 1);
   assert.equal(saldo(a), 60000);
 });
