@@ -78,10 +78,11 @@ test('paneles · las celdas B4:B6 de _respaldo las escribe Code.gs en ese orden 
   const m = CODE.match(/escribirTexto_\('_respaldo', texto, \[([^\]]*)\]\)/);
   assert.ok(m, 'no se encontró la escritura de _respaldo');
   const meta = m[1].split(/,(?![^()]*\))/).map(s => s.trim());
-  assert.equal(meta.length, 6);
+  assert.equal(meta.length, 7);
   assert.match(meta[3], /alerta/);
   assert.match(meta[4], /margen/);
   assert.match(meta[5], /vidaUtil/);
+  assert.equal(meta[6], 'version', 'B7 es la versión del Sheet; los paneles no la leen');
 });
 
 test('paneles · el panel de proveedores lee las columnas correctas de Compras y Proveedores', () => {

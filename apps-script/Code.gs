@@ -14,7 +14,7 @@
  *
  * La pestaña oculta «_respaldo» guarda el respaldo completo en la columna A (en trozos) y, en la columna B, datos sueltos
  * que los paneles pueden leer sin tocar el JSON: B1 fecha del último envío, B2 nº de ventas, B3 nº de clientes,
- * B4 alerta de stock bajo, B5 margen sugerido (%) y B6 vida útil del huevo (días).
+ * B4 alerta de stock bajo, B5 margen sugerido (%), B6 vida útil del huevo (días) y B7 la versión (cambia en cada envío).
  *
  * Además, la pestaña «Cargar clientes» es de entrada: tú la llenas y la app la lee (acción «clientes»).
  * Úsala con la plantilla de Excel del proyecto (carpeta plantilla/).
@@ -85,11 +85,11 @@ const MAX_LOGIN_MINUTO = 30; // entradas (acertadas o no) que acepta todo el scr
 // Lo que no está aquí no existe. El empleado nunca puede guardar, leer ni administrar: mientras el Sheet sea un espejo
 // por reemplazo, un envío suyo pisaría los datos del negocio.
 const ACCIONES = {
-  ping: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return q.rol === 'dueno' ? estado_() : { ok: true, rol: 'empleado' }; } },
+  ping: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return estado_(q.rol !== 'dueno'); } },
   yo: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return yo_(q); } },
   salir: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return salir_(q); } },
-  guardar: { roles: ['dueno'], ejecutar: function (p) { return guardar_(p.datos); } },
-  leer: { roles: ['dueno'], ejecutar: function () { return leer_(); } },
+  guardar: { roles: ['dueno', 'empleado'], ejecutar: function (p) { return guardar_(p.datos, p.base); } },
+  leer: { roles: ['dueno', 'empleado'], ejecutar: function () { return leer_(); } },
   clientes: { roles: ['dueno'], ejecutar: function () { return clientesImportar_(); } },
   empleadoCrear: { roles: ['dueno'], ejecutar: function (p) { return empleadoCrear_(p); } },
   empleadoListar: { roles: ['dueno'], ejecutar: function () { return empleadoListar_(); } },
@@ -353,25 +353,37 @@ function escribirTexto_(nombre, texto, meta) {
   h.hideSheet();
 }
 
-function estado_() {
+// Versión de lo guardado en el Sheet: cambia en cada envío. Los teléfonos mandan la que cargaron por última vez y, si ya no
+// coincide, el envío se rechaza en vez de pisar lo que otro guardó. '' = todavía no hay datos; 'v0' = datos de un script anterior.
+function versionActual_() {
   const h = libro_().getSheetByName('_respaldo');
-  if (!h || h.getLastRow() < 1) return { ok: true, tieneDatos: false };
-  const meta = h.getRange(1, 2, 3, 1).getValues().map(function (r) { return r[0]; });
-  return { ok: true, tieneDatos: true, actualizado: meta[0], ventas: Number(meta[1]) || 0, clientes: Number(meta[2]) || 0 };
+  if (!h || h.getLastRow() < 1) return '';
+  const v = String(h.getRange(7, 2).getValue() || '');
+  return v || 'v0';
 }
-
+function estado_(minimo) {
+  const h = libro_().getSheetByName('_respaldo');
+  if (!h || h.getLastRow() < 1) return minimo ? { ok: true, rol: 'empleado', tieneDatos: false, version: '' } : { ok: true, tieneDatos: false, version: '' };
+  const meta = h.getRange(1, 2, 7, 1).getValues().map(function (r) { return r[0]; });
+  const version = String(meta[6] || '') || 'v0';
+  if (minimo) return { ok: true, rol: 'empleado', tieneDatos: true, actualizado: meta[0], version: version };
+  return { ok: true, tieneDatos: true, actualizado: meta[0], ventas: Number(meta[1]) || 0, clientes: Number(meta[2]) || 0, version: version };
+}
 function leer_() {
   const texto = leerTexto_('_respaldo');
   if (!texto) return { ok: false, error: 'El Sheet todavía no tiene datos guardados' };
-  return { ok: true, texto: texto };
+  return { ok: true, texto: texto, version: versionActual_() };
 }
 
-function guardar_(d) {
+function guardar_(d, base) {
   if (!d || d.app !== 'el-gallinero' || !Array.isArray(d.products) || !Array.isArray(d.ventas) || !Array.isArray(d.entradas) || !Array.isArray(d.clientes)) {
     return { ok: false, error: 'Datos inválidos' };
   }
   const texto = JSON.stringify(d);
   if (texto.length > 4000000) return { ok: false, error: 'Hay demasiados datos para este método' };
+  // Comprobación de versión (dentro del cerrojo): si el Sheet cambió desde que este teléfono lo cargó, no se pisa. Sin `base`
+  // (una app anterior) se guarda como siempre.
+  if (typeof base === 'string' && base !== versionActual_()) return { ok: false, conflicto: true, error: 'El Sheet cambió desde tu última carga', version: versionActual_() };
 
   // Una generación anterior de seguridad, por si un envío sale mal.
   const previo = leerTexto_('_respaldo');
@@ -381,7 +393,8 @@ function guardar_(d) {
   // La configuración va en celdas propias (B4:B6): en el JSON queda al final y, con muchos datos, fuera del primer trozo.
   const cfg = d.config || {};
   const numCfg = function (x, def) { const n = Number(x); return isFinite(n) && n >= 0 ? n : def; };
-  escribirTexto_('_respaldo', texto, [ahora, d.ventas.length, d.clientes.length, numCfg(cfg.alerta, 50), numCfg(cfg.margen, 25), numCfg(cfg.vidaUtil, 21)]);
+  const version = 'v' + Date.now().toString(36) + Math.floor(Math.random() * 1679616).toString(36);
+  escribirTexto_('_respaldo', texto, [ahora, d.ventas.length, d.clientes.length, numCfg(cfg.alerta, 50), numCfg(cfg.margen, 25), numCfg(cfg.vidaUtil, 21), version]);
 
   const prod = Object.create(null); d.products.forEach(function (p) { prod[p.id] = p; });
   const cli = Object.create(null); d.clientes.forEach(function (c) { cli[c.id] = c; });
@@ -446,5 +459,5 @@ function guardar_(d) {
       return [c.fecha, c.esperado, c.contado, c.diferencia, c.nota || '', c.por || ''];
     }));
 
-  return { ok: true, actualizado: ahora, ventas: d.ventas.length, clientes: d.clientes.length };
+  return { ok: true, actualizado: ahora, version: version, ventas: d.ventas.length, clientes: d.clientes.length };
 }
