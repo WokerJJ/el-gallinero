@@ -323,3 +323,144 @@ test('equipo · el menú Más del dueño tiene Empleados y, con login activo, Ce
   const sin = cargarApp({ seed: sembrar() }).run('VISTAS.mas()');
   assert.ok(!/Cerrar sesión/.test(sin), 'sin login activo no hay sesión que cerrar');
 });
+
+/* ---------- sesión vencida con una hoja abierta (BUG-001) ---------- */
+const movBase = { id: 1700000000000100, fecha: '2026-11-01', tipo: 'ingreso', monto: 1000, concepto: 'Saldo inicial', origen: 'apertura', ref: null, refTipo: null, por: 'Dueño' };
+const conCaja = (extra = {}) => cargarApp({ fetch: servidor().fetch, seed: { ...sembrar({ products: [huevo()], movimientos: [movBase], config: { cajaActiva: true } }), ...acceso({ sesion: empleado() }), ...extra } });
+function abrirGasto(a) {
+  a.run("formMovimientoCaja('egreso')");
+  const b = a.hoja().querySelector('.sheet-body');
+  b.querySelector('#mv-concepto').value = 'Bolsas'; b.querySelector('#mv-monto').value = '50';
+  return b.querySelector('#f-mov').listeners.submit[0];
+}
+const vencer = a => a.run("acceso.sesion.vence = '2020-01-01T00:00:00.000Z'");
+
+test('sesión vencida · la hoja abierta se cierra al repintar y un envío tardío no crea el movimiento como «Dueño»', async () => {
+  const a = conCaja();
+  const enviar = abrirGasto(a);
+  assert.ok(a.hoja(), 'la hoja está abierta');
+  vencer(a);
+  a.run('pintar()');
+  assert.equal(a.hoja(), null, 'ya no existe .sheet-wrap');
+  await enviar({ preventDefault() {} });
+  assert.equal(a.run('movimientos.length'), 1, 'el envío tardío no registró nada');
+  assert.ok(!a.ev('movimientos').some(m => m.por === 'Dueño' && m.concepto === 'Bolsas'));
+  assert.equal(ultimoToast(a).error, true);
+});
+test('sesión vencida · aunque la hoja siga en pantalla, enviar sin sesión vigente se rechaza con aviso', async () => {
+  const a = conCaja();
+  const enviar = abrirGasto(a);
+  vencer(a); // sin repintar: el envío llega con la sesión ya vencida
+  await enviar({ preventDefault() {} });
+  assert.equal(a.run('movimientos.length'), 1);
+  assert.equal(a.run('loginPendiente()'), true);
+  assert.match(ultimoToast(a).texto, /sesión/i);
+});
+test('sesión vencida · cerrar sesión y la validación del script también cierran la hoja abierta', async () => {
+  const a = conCaja();
+  abrirGasto(a);
+  await a.run('cerrarSesion()');
+  assert.equal(a.hoja(), null, 'cerrar sesión');
+  const b = cargarApp({ fetch: servidor({ sesionViva: false }).fetch, seed: { ...sembrar({ products: [huevo()] }), ...acceso({ sesion: empleado() }) } });
+  b.run("formMovimientoCaja('egreso')");
+  assert.ok(b.hoja());
+  await b.run('validarSesion()');
+  assert.equal(b.hoja(), null, 'el script revocó la sesión');
+});
+test('sesión vencida · el cierre de caja y las ventas tampoco se registran sin sesión', async () => {
+  const a = conCaja();
+  vencer(a);
+  assert.equal(a.run('aplicar(() => { movimientos.push(nuevoMovimiento("egreso", 5, "x", "manual", null)); }, "ok")'), false);
+  assert.equal(a.run('movimientos.length'), 1);
+});
+
+/* ---------- revocación de mejor esfuerzo (BUG-002) ---------- */
+test('revocación · al volver a primer plano se vuelve a preguntar al script y, si ya no vale, se sale', async () => {
+  const s = servidor({ sesionViva: true });
+  const a = cargarApp({ fetch: s.fetch, seed: acceso({ sesion: empleado() }) });
+  await esperar(20);
+  const antes = s.llamadas.filter(l => l.accion === 'yo').length;
+  a.doc.visibilityState = 'hidden';
+  (a.doc.listeners.visibilitychange || []).forEach(f => f());
+  await esperar(10);
+  assert.equal(s.llamadas.filter(l => l.accion === 'yo').length, antes, 'oculta: no pregunta');
+  a.doc.visibilityState = 'visible';
+  (a.doc.listeners.visibilitychange || []).forEach(f => f());
+  await esperar(10);
+  assert.equal(s.llamadas.filter(l => l.accion === 'yo').length, antes + 1, 'visible: pregunta');
+  const muerto = servidor({ sesionViva: false });
+  const b = cargarApp({ fetch: muerto.fetch, seed: acceso({ sesion: empleado() }) });
+  await esperar(20); // la del arranque ya la saca; se vuelve a entrar con una sesión nueva y el script la revoca después
+  b.run(`acceso.sesion = ${JSON.stringify(empleado())}`);
+  b.doc.visibilityState = 'visible';
+  (b.doc.listeners.visibilitychange || []).forEach(f => f());
+  await esperar(20);
+  assert.equal(b.run('loginPendiente()'), true);
+});
+test('revocación · mientras haya sesión de empleado se revalida cada cierto tiempo, y no sin sesión ni para el dueño', async () => {
+  const s = servidor();
+  const a = cargarApp({ fetch: s.fetch, seed: acceso({ sesion: empleado() }) });
+  await esperar(20);
+  const n = () => s.llamadas.filter(l => l.accion === 'yo').length, base = n();
+  a.run('REVALIDAR_MS = 15; vigilarSesion()');
+  await esperar(80);
+  assert.ok(n() >= base + 2, `se revalidó varias veces (${n() - base})`);
+  const d = servidor();
+  const b = cargarApp({ fetch: d.fetch, seed: { ...syncDueno, ...acceso({ sesion: { rol: 'dueno' } }) } });
+  b.run('REVALIDAR_MS = 15; vigilarSesion()');
+  await esperar(60);
+  assert.equal(d.llamadas.length, 0, 'el dueño no usa token');
+});
+
+/* ---------- script anterior y errores del script (EVA-004) ---------- */
+test('entrada · un script anterior a los empleados (responde «Clave incorrecta» al login) se explica', async () => {
+  const fetch = async () => ({ json: async () => ({ ok: false, error: 'Clave incorrecta' }) });
+  const a = cargarApp({ fetch, seed: acceso() });
+  await a.run("entrarEmpleado('', 'luis', '4829')");
+  assert.match(ultimoToast(a).texto, /Actualiza el script de Google Sheets/);
+  assert.equal(a.run('loginPendiente()'), true);
+});
+test('postScript · conserva «prohibido» y «sesion: false» del script en el error', async () => {
+  const resp = x => async () => ({ json: async () => x });
+  const a = cargarApp({ fetch: resp({ ok: false, error: 'No tienes permiso para esta acción', prohibido: true }) });
+  const e = await a.run("postScript('https://x', {}).catch(e => e)");
+  assert.equal(e.prohibido, true);
+  const b = cargarApp({ fetch: resp({ ok: false, error: 'venció', sesion: false }) });
+  const e2 = await b.run("postScript('https://x', {}).catch(e => e)");
+  assert.equal(e2.sesion, false);
+  assert.ok(!e2.prohibido);
+});
+
+/* ---------- pantalla de entrada (DIS-001, DIS-002, DIS-003) ---------- */
+test('entrada · al mostrarla y al cambiar de modo el foco va al primer campo, y los campos piden la tecla correcta', () => {
+  const a = cargarApp({ seed: acceso() }); // sin enlace conocido: el primer campo es el enlace
+  a.run("acceso.url = ''");
+  let foco = [];
+  for (const id of ['#en-url', '#en-usuario', '#en-clave']) a.q(id).focus = () => foco.push(id);
+  a.run('pantallaEntrada()');
+  assert.deepEqual(foco, ['#en-url'], 'sin enlace conocido se empieza por el enlace');
+  const html = a.q('#vista').innerHTML;
+  assert.match(html, /id="en-usuario"[^>]*enterkeyhint="next"/);
+  assert.match(html, /id="en-pin"[^>]*enterkeyhint="go"/);
+  const c = cargarApp({ seed: acceso({ url: URL_OK }) });
+  foco = [];
+  for (const id of ['#en-usuario', '#en-clave']) c.q(id).focus = () => foco.push(id);
+  c.run('pantallaEntrada()');
+  clic(c, { act: 'entrada-modo', m: 'dueno' });
+  assert.deepEqual(foco, ['#en-usuario', '#en-clave']);
+  assert.match(c.q('#vista').innerHTML, /id="en-clave"[^>]*enterkeyhint="go"/);
+});
+test('entrada · al cambiar entre Empleado y Dueño no se pierde el enlace que se había escrito', () => {
+  const a = cargarApp({ seed: { eg_acceso: { exigir: true, url: '', sesion: null } } });
+  a.q('#en-url').value = 'https://script.google.com/macros/s/AKfycbx_abc-123/exec';
+  clic(a, { act: 'entrada-modo', m: 'dueno' });
+  assert.match(a.q('#vista').innerHTML, /id="en-url"[^>]*value="https:\/\/script\.google\.com\/macros\/s\/AKfycbx_abc-123\/exec"/);
+  clic(a, { act: 'entrada-modo', m: 'empleado' });
+  assert.match(a.q('#vista').innerHTML, /id="en-url"[^>]*value="https:\/\/script\.google\.com/);
+});
+test('entrada · los márgenes de las tarjetas de sesión y empleados salen de una clase, no de estilos en línea', () => {
+  const a = cargarApp({ seed: { ...syncDueno, ...sembrar(), ...acceso({ sesion: { rol: 'dueno' } }) } });
+  assert.ok(!/style="margin-bottom:12px"/.test(a.run('tarjetaSesion()')));
+  assert.ok(!/style="margin-bottom:12px"/.test(a.run('VISTAS.empleados()')));
+  assert.match(a.run('tarjetaSesion()'), /class="muted lead"/);
+});

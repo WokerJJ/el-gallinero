@@ -83,6 +83,7 @@ main { max-width: 720px; margin: 0 auto; padding: 16px; }
 }
 .card h3 small { font-family: var(--body); font-size: .78rem; font-weight: 600; color: var(--ink-soft); margin-left: 6px; }
 .muted { color: var(--ink-soft); font-size: .88rem; }
+.muted.lead { margin-bottom: 12px; } /* texto de una tarjeta que va antes de su botón */
 .empty { color: var(--ink-soft); font-size: .92rem; padding: 6px 0; }
 
 /* ---------- Acciones rápidas ---------- */

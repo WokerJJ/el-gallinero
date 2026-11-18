@@ -216,6 +216,8 @@ function guardar() {
 /* Muta, guarda y, si guardar falla, devuelve la memoria al estado anterior.
    El aviso de éxito solo sale si se guardó (el de error lo pone guardar()). */
 function aplicar(mutar, mensajeOk) {
+  // Con el inicio de sesión pedido y la sesión vencida (o cerrada) nada se registra: ni como «Dueño» por descuido (ver «Acceso»).
+  if (acceso.exigir && !sesionVigente()) { cerrarHoja(false); aviso('Tu sesión terminó: entra de nuevo', true); pintar(); return false; }
   const previo = clonar(estado());
   mutar();
   if (guardar()) { if (mensajeOk) aviso(mensajeOk); return true; }
@@ -416,7 +418,7 @@ const VISTAS = {};
 const MONTAR = {};
 function navegar(v) { if (location.hash !== '#/' + v) location.hash = '#/' + v; else pintar(); }
 function pintar() {
-  if (loginPendiente()) { vistaActual = 'entrada'; pantallaEntrada(); window.scrollTo(0, 0); return; }
+  if (loginPendiente()) { cerrarHoja(false); vistaActual = 'entrada'; pantallaEntrada(); window.scrollTo(0, 0); return; } // una hoja abierta no sobrevive a la sesión
   const v = (location.hash.replace('#/', '') || 'inicio');
   vistaActual = VISTAS[v] ? v : 'inicio';
   if (VISTAS_DUENO.has(vistaActual) && !esDueno()) vistaActual = 'inicio'; // el empleado no entra a las vistas del dueño ni escribiendo la dirección
@@ -1320,12 +1322,12 @@ function ocultarSoloDueno() {
   });
 }
 
-let modoEntrada = 'empleado';
+let modoEntrada = 'empleado', urlTecleada = ''; // el enlace tecleado sobrevive al cambio entre Empleado y Dueño
 function pantallaEntrada() {
   $('#nav').innerHTML = '';
   const urlConocida = (sync && sync.url) || acceso.url;
   const emp = modoEntrada === 'empleado';
-  const campoUrl = urlConocida ? '' : '<label class="field"><span>Enlace de la aplicación web</span><input id="en-url" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"><div class="hint">Te lo da el dueño.</div></label>';
+  const campoUrl = urlConocida ? '' : '<label class="field"><span>Enlace de la aplicación web</span><input id="en-url" type="url" inputmode="url" enterkeyhint="next" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" value="' + esc(urlTecleada) + '"><div class="hint">Te lo da el dueño.</div></label>';
   $('#vista').innerHTML = `
     <div class="view-head"><h2>Entrar</h2></div>
     <div class="seg seg-botones" role="group" aria-label="Cómo entras">
@@ -1333,12 +1335,14 @@ function pantallaEntrada() {
       <button type="button" class="seg-btn" data-act="entrada-modo" data-m="dueno" aria-pressed="${!emp}">Dueño</button>
     </div>
     ${emp ? `<form id="f-entrada" class="card" novalidate><h3>Soy empleado</h3>${campoUrl}
-      <label class="field"><span>Usuario</span><input id="en-usuario" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="20"></label>
-      <label class="field"><span>PIN</span><input id="en-pin" class="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="current-password"><div class="hint">De 4 a 6 números.</div></label>
+      <label class="field"><span>Usuario</span><input id="en-usuario" type="text" enterkeyhint="next" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="20"></label>
+      <label class="field"><span>PIN</span><input id="en-pin" class="pin" type="password" inputmode="numeric" enterkeyhint="go" pattern="[0-9]*" maxlength="6" autocomplete="current-password"><div class="hint">De 4 a 6 números.</div></label>
       <button class="btn btn-teal" type="submit">Entrar</button></form>`
     : `<form id="f-entrada" class="card" novalidate><h3>Soy el dueño</h3>${campoUrl}
-      <label class="field"><span>Clave</span><input id="en-clave" type="password" autocomplete="current-password"><div class="hint">La que pusiste dentro del script de Google Sheets.</div></label>
+      <label class="field"><span>Clave</span><input id="en-clave" type="password" enterkeyhint="go" autocomplete="current-password"><div class="hint">La que pusiste dentro del script de Google Sheets.</div></label>
       <button class="btn btn-teal" type="submit">Entrar</button></form>`}`;
+  const primero = campoUrl ? $('#en-url') : $(emp ? '#en-usuario' : '#en-clave');
+  if (primero) primero.focus();
   $('#f-entrada').addEventListener('submit', e => {
     e.preventDefault();
     const url = $('#en-url') ? $('#en-url').value : '';
@@ -1351,10 +1355,15 @@ async function entrarEmpleado(url, usuario, pin) {
   if (!URL_SCRIPT_RE.test(url)) return aviso('Escribe el enlace de la aplicación web que te dio el dueño', true);
   if (!usuario || !/^\d{4,6}$/.test(pin)) return aviso('Escribe tu usuario y tu PIN (de 4 a 6 números)', true);
   let j;
-  try { j = await postScript(url, { accion: 'login', usuario, pin }); } catch (e) { return aviso(mensajeSync(e), true); }
+  try { j = await postScript(url, { accion: 'login', usuario, pin }); } catch (e) {
+    // Un script anterior a los empleados no conoce «login» y lo toma por una llamada sin clave.
+    if (e && e.message === 'Clave incorrecta') return aviso('Actualiza el script de Google Sheets (Implementar → Nueva versión): el tuyo es anterior a los empleados', true);
+    return aviso(mensajeSync(e), true);
+  }
   if (!j || typeof j.token !== 'string' || !j.token || !j.empleado || typeof j.empleado.nombre !== 'string' || typeof j.vence !== 'string') return aviso('Respuesta no válida del script', true);
   acceso = { exigir: true, url, sesion: { rol: 'empleado', usuario: String(j.empleado.usuario || usuario).slice(0, 20), nombre: j.empleado.nombre.slice(0, 40), token: j.token, vence: j.vence } };
   guardarAcceso(); pintar(); aviso('Hola, ' + acceso.sesion.nombre);
+  vigilarSesion();
 }
 async function entrarDueno(url, clave) {
   clave = String(clave || '').trim();
@@ -1385,7 +1394,16 @@ async function validarSesion() {
     if (err && err.sesion === false && acceso.sesion && acceso.sesion.token === e.token) { acceso.sesion = null; guardarAcceso(); pintar(); aviso('Tu sesión terminó: entra de nuevo', true); }
   }
 }
-const tarjetaSesion = () => (acceso.exigir ? `<div class="card"><h3>Sesión</h3><p class="muted" style="margin-bottom:12px">${empleadoActual() ? `Entraste como ${esc(empleadoActual().nombre)}.` : 'Entraste como dueño.'}</p><button class="btn btn-ghost" data-act="sesion-salir">Cerrar sesión</button></div>` : '');
+/* La revocación (desactivar al empleado, cambiar su PIN) es de mejor esfuerzo: se nota al abrir la app, al volver a ella y cada
+   REVALIDAR_MS mientras esté abierta con sesión de empleado. Sin red no se cierra nada, y un reloj atrasado alarga la sesión local. */
+let REVALIDAR_MS = 5 * 60000, vigia = null;
+function vigilarSesion() {
+  clearTimeout(vigia); vigia = null;
+  if (!empleadoActual()) return;
+  vigia = setTimeout(() => { validarSesion().finally(vigilarSesion); }, REVALIDAR_MS);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') validarSesion(); });
+const tarjetaSesion = () => (acceso.exigir ? `<div class="card"><h3>Sesión</h3><p class="muted lead">${empleadoActual() ? `Entraste como ${esc(empleadoActual().nombre)}.` : 'Entraste como dueño.'}</p><button class="btn btn-ghost" data-act="sesion-salir">Cerrar sesión</button></div>` : '');
 
 /* Pantalla del dueño: el equipo vive en el Sheet (pestaña oculta), aquí solo se administra. */
 let empleadosLista = null, empleadosCargando = false, empleadosError = '';
@@ -1410,7 +1428,7 @@ VISTAS.empleados = () => {
     <div class="card"><h3>Equipo</h3>${lista}
       <div class="btn-row"><button class="btn btn-teal" data-act="emp-nuevo">+ Nuevo empleado</button><button class="btn btn-ghost" data-act="emp-recargar">Actualizar</button></div></div>
     <div class="card"><h3>Inicio de sesión en este teléfono</h3>
-      <p class="muted" style="margin-bottom:12px">${acceso.exigir ? 'Activo: al abrir la app se pide usuario y PIN, o tu clave de dueño.' : 'Apagado: quien abra la app tiene todos los permisos. Actívalo para que cada empleado entre con su PIN.'}</p>
+      <p class="muted lead">${acceso.exigir ? 'Activo: al abrir la app se pide usuario y PIN, o tu clave de dueño.' : 'Apagado: quien abra la app tiene todos los permisos. Actívalo para que cada empleado entre con su PIN.'}</p>
       <button class="btn ${acceso.exigir ? 'btn-ghost' : ''}" data-act="emp-exigir">${acceso.exigir ? 'Dejar de pedir inicio de sesión' : 'Pedir inicio de sesión'}</button></div>`}
     <div class="card"><h3>Qué puede hacer un empleado</h3>
       <p class="muted">Vender, registrar la llegada de mercancía, cobrar abonos, pagar desde la caja y anotar gastos. No ve ganancias ni deudas a proveedores y no puede anular, cerrar la caja, cambiar precios, borrar ni tocar los respaldos. Todo lo que registre queda con su nombre.</p></div>`;
@@ -1894,7 +1912,7 @@ function postScript(url, cuerpo, ms = 30000) {
   const envio = fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(cuerpo) }).then(r => r.json());
   const limite = new Promise((_, rechazar) => { t = setTimeout(() => rechazar(new Error('timeout')), ms); });
   return Promise.race([envio, limite]).finally(() => clearTimeout(t)).then(j => {
-    if (!j || !j.ok) { const err = new Error((j && j.error) || 'respuesta no válida del script'); if (j && j.sesion === false) err.sesion = false; throw err; }
+    if (!j || !j.ok) { const err = new Error((j && j.error) || 'respuesta no válida del script'); if (j && j.sesion === false) err.sesion = false; if (j && j.prohibido) err.prohibido = true; throw err; }
     return j;
   });
 }
@@ -2097,7 +2115,7 @@ function recalcularCosto(p, lista) {
 const ACCIONES = {
   ir: el => navegar(el.dataset.v),
   cerrar: () => cerrarHoja(),
-  'entrada-modo': el => { modoEntrada = el.dataset.m === 'dueno' ? 'dueno' : 'empleado'; pantallaEntrada(); },
+  'entrada-modo': el => { if ($('#en-url')) urlTecleada = $('#en-url').value; modoEntrada = el.dataset.m === 'dueno' ? 'dueno' : 'empleado'; pantallaEntrada(); },
   'sesion-salir': () => cerrarSesion(),
   'emp-nuevo': () => formEmpleado(null),
   'emp-pin': el => formEmpleado(el.dataset.id),
@@ -2287,6 +2305,7 @@ else {
   if (sync && sync.listo && sync.pendiente) programarSync();
   try { pintar(); if (avisoArranque) aviso(avisoArranque, true); } catch (e) { pantallaRecuperacion(e); }
   validarSesion();
+  vigilarSesion();
   if (navigator.serviceWorker && location.protocol.startsWith('http')) {
     const sw = navigator.serviceWorker, habiaControlador = !!sw.controller;
     sw.addEventListener('controllerchange', () => { if (habiaControlador) mostrarActualizacion(); });
