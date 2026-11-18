@@ -1328,13 +1328,13 @@ function pantallaEntrada() {
   const campoUrl = urlConocida ? '' : '<label class="field"><span>Enlace de la aplicación web</span><input id="en-url" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"><div class="hint">Te lo da el dueño.</div></label>';
   $('#vista').innerHTML = `
     <div class="view-head"><h2>Entrar</h2></div>
-    <div class="btn-row" role="group" aria-label="Cómo entras">
-      <button type="button" class="btn ${emp ? '' : 'btn-ghost'}" data-act="entrada-modo" data-m="empleado" aria-pressed="${emp}">Empleado</button>
-      <button type="button" class="btn ${emp ? 'btn-ghost' : ''}" data-act="entrada-modo" data-m="dueno" aria-pressed="${!emp}">Dueño</button>
+    <div class="seg seg-botones" role="group" aria-label="Cómo entras">
+      <button type="button" class="seg-btn" data-act="entrada-modo" data-m="empleado" aria-pressed="${emp}">Empleado</button>
+      <button type="button" class="seg-btn" data-act="entrada-modo" data-m="dueno" aria-pressed="${!emp}">Dueño</button>
     </div>
     ${emp ? `<form id="f-entrada" class="card" novalidate><h3>Soy empleado</h3>${campoUrl}
       <label class="field"><span>Usuario</span><input id="en-usuario" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="20"></label>
-      <label class="field"><span>PIN</span><input id="en-pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="current-password"><div class="hint">De 4 a 6 números.</div></label>
+      <label class="field"><span>PIN</span><input id="en-pin" class="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="current-password"><div class="hint">De 4 a 6 números.</div></label>
       <button class="btn btn-teal" type="submit">Entrar</button></form>`
     : `<form id="f-entrada" class="card" novalidate><h3>Soy el dueño</h3>${campoUrl}
       <label class="field"><span>Clave</span><input id="en-clave" type="password" autocomplete="current-password"><div class="hint">La que pusiste dentro del script de Google Sheets.</div></label>
@@ -1402,8 +1402,8 @@ VISTAS.empleados = () => {
   const lista = empleadosLista === null ? '<p class="muted">Cargando…</p>'
     : empleadosError ? `<div class="alert danger">${esc(empleadosError)}</div>`
     : !empleadosLista.length ? '<p class="empty">Aún no hay empleados. Crea el primero.</p>'
-    : `<div class="list">${empleadosLista.map(e => `<div class="row"><div class="main"><div class="t">${esc(e.nombre)}</div><div class="s">${esc(e.usuario)} · ${e.bloqueado ? 'Bloqueado por intentos fallidos' : e.activo ? 'Activo' : 'Desactivado'}</div></div>
-        <div class="r"><button class="btn btn-sm btn-ghost" data-act="emp-pin" data-id="${esc(e.id)}">Cambiar PIN</button> <button class="btn btn-sm btn-ghost" data-act="emp-activo" data-id="${esc(e.id)}" data-a="${e.activo ? '0' : '1'}">${e.activo ? 'Desactivar' : 'Activar'}</button></div></div>`).join('')}</div>`;
+    : `<div class="list">${empleadosLista.map(e => `<div class="row"><div class="main"><div class="t">${esc(e.nombre)}</div><div class="s">${esc(e.usuario)} · <span class="badge ${e.bloqueado ? 'out' : e.activo ? 'ok' : 'low'}">${e.bloqueado ? 'Bloqueado por intentos fallidos' : e.activo ? 'Activo' : 'Desactivado'}</span></div></div>
+        <div class="r emp-acc"><button class="btn btn-sm btn-ghost" data-act="emp-pin" data-id="${esc(e.id)}">Cambiar PIN</button> <button class="btn btn-sm btn-ghost" data-act="emp-activo" data-id="${esc(e.id)}" data-a="${e.activo ? '0' : '1'}">${e.activo ? 'Desactivar' : 'Activar'}</button></div></div>`).join('')}</div>`;
   return `
     ${cabecera('Empleados', 'mas')}
     ${!conectado ? '<div class="card"><p class="muted">Los empleados y sus PIN viven en tu Google Sheet. Conéctalo primero en Más → Google Sheets.</p></div>' : `
@@ -1423,8 +1423,8 @@ function formEmpleado(id) {
   hoja(nuevo ? 'Nuevo empleado' : `Cambiar el PIN de ${e.nombre}`, `<form id="f-emp" novalidate>
     ${nuevo ? `<label class="field"><span>Nombre</span><input id="em-nombre" type="text" maxlength="40" autocomplete="off"></label>
     <label class="field"><span>Usuario</span><input id="em-usuario" type="text" maxlength="20" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"><div class="hint">Para entrar. Empieza con una letra y sin espacios (por ejemplo: luis).</div></label>` : ''}
-    <label class="field"><span>PIN</span><input id="em-pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password"><div class="hint">De 4 a 6 números, sin repetir el mismo ni escalera (1234).</div></label>
-    <label class="field"><span>Repite el PIN</span><input id="em-pin2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password"></label>
+    <label class="field"><span>PIN</span><input id="em-pin" class="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password"><div class="hint">De 4 a 6 números, sin repetir el mismo ni escalera (1234).</div></label>
+    <label class="field"><span>Repite el PIN</span><input id="em-pin2" class="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password"></label>
     <button class="btn btn-teal" type="submit">${nuevo ? 'Crear empleado' : 'Guardar PIN'}</button></form>`, b => {
     $('#f-emp', b).addEventListener('submit', async ev => {
       ev.preventDefault();
