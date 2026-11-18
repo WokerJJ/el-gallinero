@@ -22,6 +22,7 @@ Aplicación web instalable (PWA) para llevar el control de una distribuidora de 
 - **Seguridad:** todo texto del usuario se escapa antes de pintarse y todo respaldo se valida registro por registro.
 - **Offline:** el service worker responde desde el caché y se actualiza en segundo plano; la app avisa cuando hay una versión nueva.
 - **Frescura:** cada producto declara su control (`granja`, `vencimiento` o `ninguno`); las alertas usan el lote que primero se vence.
+- **Caja:** libro de movimientos que solo se agrega (las anulaciones son contra-asientos), de un solo dispositivo por ahora. El porqué y sus límites están en [docs/adr/0001-caja-libro-de-movimientos.md](docs/adr/0001-caja-libro-de-movimientos.md).
 
 ## Probarla en local
 

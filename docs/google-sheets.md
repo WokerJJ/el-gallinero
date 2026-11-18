@@ -66,7 +66,7 @@ El script solo reescribe el bloque de la tabla (las columnas de cada pestaña, d
 | Pestaña | Columnas |
 | --- | --- |
 | Inventario | Producto · Unidad · Existencias · Costo promedio · Precio de venta · Control de frescura |
-| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe · Comprobante · Costo unitario · Medio de cobro |
+| Ventas | Fecha · Producto · Cantidad · Panales · Precio · Total · Cliente · Pago · Abonado · Debe · Comprobante · Costo unitario · Medio de cobro · Abonado en efectivo · Abonado por transferencia |
 | Compras | Fecha · Producto · Cantidad · Panales · Costo unitario · Total · Vence · Días en granja · Notas · Proveedor · Pagado · Debe · Comprobante · Recibió · Documento proveedor |
 | Proveedores | Proveedor · Teléfono · Deuda · Notas · Saldo a favor |
 | Clientes | Cliente · Teléfono · Deuda · Notas · Documento |
@@ -81,7 +81,7 @@ El script solo reescribe el bloque de la tabla (las columnas de cada pestaña, d
 - En **Ventas**, *Costo unitario* es el costo por unidad **en el momento de la venta** (el mismo que usa la app para su ganancia). Úsalo para calcular la ganancia: el costo actual del inventario cambia con cada compra y daría otra cifra. En **Proveedores**, *Saldo a favor* es lo pagado en compras que luego se anularon.
 - La pestaña oculta `_respaldo` guarda, en la columna B, datos sueltos para paneles: **B1** fecha del último envío, **B2** nº de ventas, **B3** nº de clientes, **B4** alerta de stock bajo, **B5** margen sugerido (%) y **B6** vida útil del huevo (días). Léelos de ahí, no del JSON de la columna A: con muchos datos el JSON se parte en trozos y la configuración queda fuera del primero.
 - **Caja** es el libro de movimientos del efectivo (el más reciente primero): cada fila es un *Ingreso* o un *Egreso*, nunca los dos. Los saldos se calculan sumando; una anulación aparece como un movimiento contrario, no borra el original. **Cierres** guarda cada conteo del día con lo que debía haber y la diferencia.
-- En **Ventas**, *Medio de cobro* dice si lo cobrado hoy fue en *Efectivo* o por *Transferencia* (vacío en una venta a crédito sin abono inicial). En **Compras**, *Recibió* y *Documento proveedor* identifican quién recibió la mercancía y el número de remisión o factura.
+- En **Ventas**, *Medio de cobro* dice si lo cobrado hoy fue en *Efectivo* o por *Transferencia* (vacío en una venta a crédito sin abono inicial). *Abonado en efectivo* y *Abonado por transferencia* separan lo abonado a una venta a crédito según el medio de **cada** abono (un abono anterior a esta función no tiene medio y cuenta como efectivo); la fila Cobrado de **Finanzas** suma contado más abonos por medio. En la app, el selector Efectivo / Transferencia solo se oculta si la caja está apagada y la venta es a crédito sin abono inicial: si se cobra algo se guarda el medio, aunque la caja esté apagada, porque alimenta el Sheet. «Pagó completo» con la caja apagada no pregunta y deja ese abono sin medio. En **Compras**, *Recibió* y *Documento proveedor* identifican quién recibió la mercancía y el número de remisión o factura.
 - *Cantidad* siempre está en unidades; *Panales* solo se llena cuando la venta o la compra fue por panal.
 - Para referenciar toda una columna usa rangos abiertos (por ejemplo `Ventas!F2:F`), porque el número de filas cambia en cada envío.
 

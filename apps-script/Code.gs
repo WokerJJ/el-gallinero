@@ -163,10 +163,16 @@ function guardar_(d) {
   escribirHoja_('Inventario', ['Producto', 'Unidad', 'Existencias', 'Costo promedio', 'Precio de venta', 'Control de frescura'],
     d.products.map(function (p) { return [p.name, p.unit, p.stock, p.cost, p.price || '', p.control || '']; }));
 
-  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe', 'Comprobante', 'Costo unitario', 'Medio de cobro'],
+  // Lo abonado a una venta a crédito, separado por medio. Un abono anterior a esta función (sin medio) se cuenta como efectivo.
+  const abonadoPor = function (v, transferencia) {
+    if (v.tipoPago !== 'credito') return '';
+    return (v.abonos || []).filter(function (a) { return (a.medio === 'transferencia') === transferencia; }).reduce(function (s, a) { return s + (Number(a.monto) || 0); }, 0);
+  };
+
+  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe', 'Comprobante', 'Costo unitario', 'Medio de cobro', 'Abonado en efectivo', 'Abonado por transferencia'],
     d.ventas.slice().sort(porFechaDesc).map(function (v) {
       const debe = v.tipoPago === 'credito' ? Math.max(0, v.total - (v.pagado || 0)) : 0;
-      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe, numeroComprobante(v.numero), v.costoUnitario || 0, v.medio === 'efectivo' ? 'Efectivo' : (v.medio === 'transferencia' ? 'Transferencia' : '')];
+      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe, numeroComprobante(v.numero), v.costoUnitario || 0, v.medio === 'efectivo' ? 'Efectivo' : (v.medio === 'transferencia' ? 'Transferencia' : ''), abonadoPor(v, false), abonadoPor(v, true)];
     }));
 
   escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas', 'Proveedor', 'Pagado', 'Debe', 'Comprobante', 'Recibió', 'Documento proveedor'],
