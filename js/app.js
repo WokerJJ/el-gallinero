@@ -45,15 +45,16 @@ const rPanal = r => (r.panal == null ? (controlDe(r) === 'granja' ? 30 : 0) : Nu
 const controlDe = r => (CONTROLES.includes(r.control) ? r.control : (r.isEgg ? 'granja' : (['leche', 'queso', 'arepa'].includes(r.id) ? 'vencimiento' : 'ninguno'))); // datos de la versión anterior: los lácteos y la arepa son empacados
 
 // SCHEMA 4: config.anulados (rastro de comprobantes con ventas anuladas) y saldoFavor de proveedores.
-const SCHEMA = 4;
+// SCHEMA 5: caja (movimientos y cierres), medio de cobro de las ventas y recepción de mercancía (quién recibió, documento).
+const SCHEMA = 5;
 const CLAVE_DB = 'eg_db', CLAVE_PREV = 'eg_prev';
 // Claves de la versión anterior (una por colección): solo se LEEN, para migrar al guardado único eg_db.
 const CLAVES = { products: 'eg_products', entradas: 'eg_entradas', ventas: 'eg_ventas', clientes: 'eg_clientes', config: 'eg_config', ajustes: 'eg_ajustes' };
 const negocioBase = () => ({ nombre: 'El Gallinero', nit: '', direccion: '', telefono: '', ciudad: '', prefijo: 'CV', prefijoCompra: 'CP' });
-const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, anulados: [], consecutivoCompra: 1, anuladosCompra: [], schemaVersion: SCHEMA });
+const configBase = () => ({ margen: 25, alerta: 50, vidaUtil: 21, ultimoRespaldo: null, negocio: negocioBase(), consecutivo: 1, anulados: [], consecutivoCompra: 1, anuladosCompra: [], cajaActiva: false, schemaVersion: SCHEMA });
 
 let aviso_t; // se declara antes de cualquier uso: migrar() y guardar() pueden llamar a aviso() al arrancar
-let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], config = configBase();
+let products = [], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], movimientos = [], cierres = [], config = configBase();
 let errorArranque = null, avisoArranque = '';
 let sync = null, syncEnCurso = false, syncTimer = null; // conexión con Google Sheets (ver más abajo)
 
@@ -70,9 +71,17 @@ const rId = x => (Number.isSafeInteger(x) ? x : mal());
 const numeroOk = x => Number.isSafeInteger(x) && x >= 1 && x <= MAX_NUMERO;
 const fechaOk = s => typeof s === 'string' && FECHA_RE.test(s) && isoDe(fechaDe(s)) === s;
 const rFecha = x => (fechaOk(x) ? x : mal());
+const ORIGENES_CAJA = ['apertura', 'venta', 'abono', 'compra', 'pago', 'manual', 'anulacion', 'ajuste'];
 const SANEAR = {
   products: r => ({ id: rSid(r.id), name: rTxt(r.name) || mal(), unit: rTxt(r.unit, 'unidades'), cost: rNum(r.cost, 0), price: rNum(r.price, 0), stock: rNum(r.stock, 0), lastCost: rNum(r.lastCost, 0), control: controlDe(r), panal: rPanal(r) }),
   clientes: r => ({ id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas), documento: rTxt(r.documento).slice(0, 30) }),
+  // Libro de caja: monto siempre positivo; el tipo dice si entra o sale. `ref` apunta a la venta, la compra o el movimiento que lo originó.
+  movimientos: r => {
+    const monto = rNum(r.monto);
+    if (!(monto > 0) || (r.tipo !== 'ingreso' && r.tipo !== 'egreso')) mal();
+    return { id: rId(r.id), fecha: rFecha(r.fecha), tipo: r.tipo, monto, concepto: rTxt(r.concepto).slice(0, 100), origen: ORIGENES_CAJA.includes(r.origen) ? r.origen : 'manual', ref: Number.isSafeInteger(r.ref) ? r.ref : null, por: rTxt(r.por).slice(0, 40) || 'Dueño' };
+  },
+  cierres: r => ({ id: rId(r.id), fecha: rFecha(r.fecha), esperado: rNum(r.esperado), contado: rNum(r.contado), diferencia: rNum(r.diferencia), nota: rTxt(r.nota).slice(0, 200), por: rTxt(r.por).slice(0, 40) || 'Dueño' }),
   proveedores: r => { const o = { id: rSid(r.id), nombre: rTxt(r.nombre) || mal(), telefono: rTxt(r.telefono), notas: rTxt(r.notas) }, sf = rNum(r.saldoFavor, 0); if (sf > 0) o.saldoFavor = redondear(sf); return o; }, // saldoFavor: lo pagado en compras anuladas
   entradas: r => {
     const cantidad = rNum(r.cantidad), costoUnitario = rNum(r.costoUnitario, 0);
@@ -86,6 +95,8 @@ const SANEAR = {
     // negativa), y un abono de monto cero o negativo no es un pago: se descarta. Un monto que no es número invalida el registro.
     o.pagado = Math.max(0, Math.min(o.total, rNum(r.pagado, o.total)));
     o.abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })).filter(a => a.monto > 0) : mal();
+    if (typeof r.recibidoPor === 'string' && r.recibidoPor.trim()) o.recibidoPor = r.recibidoPor.trim().slice(0, 60);
+    if (typeof r.documentoProveedor === 'string' && r.documentoProveedor.trim()) o.documentoProveedor = r.documentoProveedor.trim().slice(0, 40);
     if (numeroOk(r.numero)) o.numero = r.numero; // número del comprobante de compra (fuera de rango: se descarta, la compra se conserva)
     return o;
   },
@@ -94,14 +105,14 @@ const SANEAR = {
     const cantidad = rNum(r.cantidad), precio = rNum(r.precio), costoUnitario = rNum(r.costoUnitario, 0), total = rNum(r.total, cantidad * precio);
     const tipoPago = r.tipoPago == null ? 'contado' : (r.tipoPago === 'contado' || r.tipoPago === 'credito' ? r.tipoPago : mal());
     const abonos = r.abonos == null ? [] : Array.isArray(r.abonos) ? r.abonos.map(a => ({ fecha: rFecha(a.fecha), monto: rNum(a.monto) })) : mal();
-    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(numeroOk(r.numero) ? { numero: r.numero } : {}) };
+    return { id: rId(r.id), productoId: rSid(r.productoId), cantidad, descontado: rNum(r.descontado, cantidad), precio, total, costoUnitario, ganancia: rNum(r.ganancia, (precio - costoUnitario) * cantidad), fecha: rFecha(r.fecha), clienteId: r.clienteId == null || r.clienteId === '' ? null : rSid(r.clienteId), tipoPago, pagado: rNum(r.pagado, tipoPago === 'credito' ? 0 : total), abonos, ...(r.panales != null ? { panales: rNum(r.panales), precioPanal: rNum(r.precioPanal, 0) } : {}), ...(numeroOk(r.numero) ? { numero: r.numero } : {}), ...(r.medio === 'efectivo' || r.medio === 'transferencia' ? { medio: r.medio } : {}) };
   },
 };
 function sanearConfig(c) {
   c = c && typeof c === 'object' && !Array.isArray(c) ? c : {};
   const n = (x, def, min, max) => { const v = x == null || x === '' ? NaN : Number(x); return Number.isFinite(v) && v >= min && v <= max ? v : def; };
   const base = configBase();
-  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: numeroOk(c.consecutivo) ? c.consecutivo : 1, anulados: sanearAnulados(c.anulados), consecutivoCompra: numeroOk(c.consecutivoCompra) ? c.consecutivoCompra : 1, anuladosCompra: sanearAnulados(c.anuladosCompra), schemaVersion: SCHEMA };
+  return { margen: n(c.margen, base.margen, 0, 500), alerta: n(c.alerta, base.alerta, 0, TOPE), vidaUtil: n(c.vidaUtil, base.vidaUtil, 1, 365), ultimoRespaldo: fechaOk(c.ultimoRespaldo) ? c.ultimoRespaldo : null, negocio: sanearNegocio(c.negocio), consecutivo: numeroOk(c.consecutivo) ? c.consecutivo : 1, anulados: sanearAnulados(c.anulados), consecutivoCompra: numeroOk(c.consecutivoCompra) ? c.consecutivoCompra : 1, anuladosCompra: sanearAnulados(c.anuladosCompra), cajaActiva: c.cajaActiva === true, schemaVersion: SCHEMA };
 }
 // Rastro de las ventas anuladas que ya tenían número de comprobante: {numero, fecha, cliente, total}. Se conservan las últimas 500.
 function sanearAnulados(l) {
@@ -122,7 +133,7 @@ function sanearNegocio(n) {
 function limpiar(crudo) {
   const d = crudo && typeof crudo === 'object' ? crudo : {};
   const datos = {}, errores = [];
-  for (const k of ['products', 'entradas', 'ventas', 'clientes', 'ajustes', 'proveedores']) {
+  for (const k of ['products', 'entradas', 'ventas', 'clientes', 'ajustes', 'proveedores', 'movimientos', 'cierres']) {
     datos[k] = [];
     if (d[k] == null) continue;
     if (!Array.isArray(d[k])) { errores.push(`${k}: no es una lista`); continue; }
@@ -151,8 +162,8 @@ function migrar(d) {
   d.entradas = d.entradas.filter(e => e.cantidad > 0);
   return true;
 }
-const estado = () => ({ products, entradas, ventas, clientes, ajustes, proveedores, config });
-const poner = d => { ({ products, entradas, ventas, clientes, ajustes, proveedores, config } = d); if (!products.length) products = clonar(PRODUCTOS_BASE); };
+const estado = () => ({ products, entradas, ventas, clientes, ajustes, proveedores, movimientos, cierres, config });
+const poner = d => { ({ products, entradas, ventas, clientes, ajustes, proveedores, movimientos, cierres, config } = d); if (!products.length) products = clonar(PRODUCTOS_BASE); };
 
 // Un solo setItem: o se guarda todo o no se guarda nada.
 function guardar() {
@@ -295,7 +306,7 @@ const ICONOS = {
 const icono = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS[n]}</svg>`;
 
 const NAV = [['inicio', 'Inicio'], ['vender', 'Vender'], ['comprar', 'Comprar'], ['clientes', 'Clientes'], ['mas', 'Más']];
-const SUBVISTAS = ['productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
+const SUBVISTAS = ['caja', 'productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes'];
 
 function aviso(msg, error = false) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -433,6 +444,7 @@ VISTAS.inicio = () => {
       ${deuda > 0 ? '<button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="clientes">Ver quién me debe</button>' : ''}
       ${deudaProv > 0 ? `<div class="stat red" style="margin-top:12px"><div class="n">${money(deudaProv)}</div><div class="l">Debo a proveedores</div></div><button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="proveedores">Ver cuentas por pagar</button>` : ''}
     </section>
+    ${cajaActiva() ? `<section class="card"><h3>Caja</h3><div class="stats"><div class="stat teal"><div class="n">${money(saldoCaja())}</div><div class="l">En caja ahora</div></div><div class="stat"><div class="n">${movimientos.filter(m => m.fecha === hoy()).length}</div><div class="l">Movimientos hoy</div></div></div><button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="caja">Ver caja</button></section>` : ''}
     <section class="card"><h3>Frescura</h3>${alertasHtml}</section>
     <section class="card"><h3>En bodega</h3><div class="list">${stockHtml}</div>
       <button class="btn btn-sm btn-ghost" style="margin-top:12px" data-act="ir" data-v="productos">Productos e inventario</button></section>
@@ -445,7 +457,7 @@ VISTAS.inicio = () => {
 };
 
 /* =============== Vender =============== */
-let memoVenta = { productoId: null, clienteId: '', pago: 'contado' };
+let memoVenta = { productoId: null, clienteId: '', pago: 'contado', medio: 'efectivo' };
 
 VISTAS.vender = () => {
   const h = hoy();
@@ -472,6 +484,8 @@ VISTAS.vender = () => {
         <label><input type="radio" name="pago" value="contado" ${memoVenta.pago === 'contado' ? 'checked' : ''}><span>Contado</span></label>
         <label><input type="radio" name="pago" value="credito" ${memoVenta.pago === 'credito' ? 'checked' : ''}><span>A crédito</span></label>
       </div>
+      <p class="muted" style="margin:-4px 0 6px">Lo que se cobra hoy entra en:</p>
+      ${segHTML('vmedio', [['efectivo', 'Efectivo'], ['transferencia', 'Transferencia']], memoVenta.medio || 'efectivo', 'Cobro en')}
       <div id="v-cli-box">
         <div class="field"><span id="v-cli-lbl">Cliente (opcional)</span>
           <div class="inline-add"><select id="v-cli" aria-labelledby="v-cli-lbl">${opcionesClientes(memoVenta.clienteId)}</select><button type="button" class="btn btn-teal" data-act="cliente-nuevo" data-vuelta="venta" aria-label="Nuevo cliente">+</button></div>
@@ -549,6 +563,9 @@ MONTAR.vender = () => {
     if (tipoPago === 'credito' && !clienteId) return aviso('Una venta a crédito necesita cliente', true);
     const abonoIn = tipoPago === 'credito' && abonoTxt !== '' ? leerNum(abonoTxt) : 0;
     if (!enRango(abonoIn)) return aviso('El abono no es válido', true);
+    // El cobro entra en efectivo (a la caja) o por transferencia. Solo importa si hoy se cobra algo: contado, o un abono inicial.
+    const medioCobro = (f.querySelector('input[name=vmedio]:checked') || {}).value === 'transferencia' ? 'transferencia' : 'efectivo';
+    const medioVenta = tipoPago === 'contado' || abonoIn > 0 ? medioCobro : null;
     if (p.stock < cantidad && !(await confirmar({ titulo: 'Stock insuficiente', texto: `Solo hay ${num(p.stock)} ${p.unit} de ${p.name}. ¿Registrar la venta igual?`, ok: 'Sí, registrar' }))) return;
     const total = redondear(n * precioIn), precio = total / cantidad; // el total es exacto (a centavos) aunque el precio por unidad no lo sea
     aplicar(() => {
@@ -556,15 +573,17 @@ MONTAR.vender = () => {
       p.stock -= descontado;
       let pagado = total; const abonos = [];
       if (tipoPago === 'credito') { const ab = Math.min(redondear(abonoIn), total); pagado = ab; if (ab > 0) abonos.push({ fecha, monto: ab }); }
-      ventas.push({ id: nuevoId(), productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos, ...(enPanal ? { panales: n, precioPanal: precioIn } : {}) });
+      const idVenta = nuevoId();
+      ventas.push({ id: idVenta, productoId: p.id, cantidad, descontado, precio, total, costoUnitario: p.cost || 0, ganancia: (precio - (p.cost || 0)) * cantidad, fecha, clienteId, tipoPago, pagado, abonos, ...(enPanal ? { panales: n, precioPanal: precioIn } : {}), ...(medioVenta ? { medio: medioVenta } : {}) });
+      if (medioVenta === 'efectivo') anotarCaja('ingreso', pagado, `Venta · ${enPanal ? num(n) + ' panales' : num(cantidad)} ${p.name}`, 'venta', idVenta);
     }, `Venta guardada · ${money(total)}`);
-    memoVenta = { productoId: p.id, clienteId: clienteId || '', pago: tipoPago };
+    memoVenta = { productoId: p.id, clienteId: clienteId || '', pago: tipoPago, medio: medioCobro };
     repintar();
   });
 };
 
 /* =============== Comprar (entradas) =============== */
-let memoCompra = { proveedorId: '', pago: 'todo' };
+let memoCompra = { proveedorId: '', pago: 'todo', origen: 'caja', recibio: '' };
 const opcionesProveedores = sel => '<option value="">Sin proveedor</option>' + proveedores.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map(c => `<option value="${esc(c.id)}" ${c.id === sel ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
 VISTAS.comprar = () => {
   const rec = entradas.slice().sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id).slice(0, 12);
@@ -594,6 +613,11 @@ VISTAS.comprar = () => {
       </div>
       <div class="field"><span id="e-prov-lbl">Finca / proveedor (opcional)</span>
         <div class="inline-add"><select id="e-prov" aria-labelledby="e-prov-lbl">${opcionesProveedores(memoCompra.proveedorId)}</select><button type="button" class="btn btn-teal" data-act="proveedor-nuevo" data-vuelta="compra" aria-label="Nuevo proveedor">+</button></div>
+      </div>
+      ${cajaActiva() ? `<p class="muted" style="margin:-4px 0 6px">Lo que pagas hoy sale de:</p>${segHTML('eorigen', [['caja', 'Caja (efectivo)'], ['otro', 'Banco / otro']], memoCompra.origen || 'caja', 'Pago con')}` : ''}
+      <div class="row2">
+        <label class="field"><span>Recibió la mercancía</span><input id="e-recibio" type="text" maxlength="60" placeholder="Nombre" value="${esc(memoCompra.recibio || '')}" autocomplete="off"></label>
+        <label class="field"><span>N.° de remisión o factura</span><input id="e-doc" type="text" maxlength="40" placeholder="Opcional" autocomplete="off"></label>
       </div>
       <label class="field"><span>Notas (opcional)</span><input id="e-notas" type="text" placeholder="Ej: lote de la mañana"></label>
       <button class="btn btn-teal btn-big" type="submit">Guardar entrada</button>
@@ -642,7 +666,7 @@ MONTAR.comprar = () => {
   f.addEventListener('input', calc);
   $('#e-usar').addEventListener('click', () => { const p = prod($('#e-prod').value); if (p) { $('#e-costo').value = Math.round((p.lastCost || p.cost) * factor() * 100) / 100; calc(); aviso('Precio anterior aplicado'); } });
   pista(); alternarPago();
-  f.addEventListener('submit', e => {
+  f.addEventListener('submit', async e => {
     e.preventDefault();
     const p = prod($('#e-prod').value);
     const k = factor(), enPanal = modo() === 'panal';
@@ -667,14 +691,20 @@ MONTAR.comprar = () => {
       if (hoyPaga >= total) return aviso('Pagaste todo: elige «Pagué todo»', true);
       pagado = hoyPaga; if (hoyPaga > 0) abonos.push({ fecha, monto: hoyPaga });
     }
+    const recibidoPor = $('#e-recibio').value.trim().slice(0, 60), documentoProveedor = $('#e-doc').value.trim().slice(0, 40);
+    const origenPago = (f.querySelector('input[name=eorigen]:checked') || {}).value === 'otro' ? 'otro' : 'caja';
+    const salidaCaja = cajaActiva() && origenPago === 'caja' ? pagado : 0;
+    if (salidaCaja > saldoCaja() && !(await confirmar({ titulo: 'La caja no alcanza', texto: `En la caja hay ${money(saldoCaja())} y esta compra paga ${money(salidaCaja)} con dinero de la caja. ¿Registrarla igual? La caja quedaría en ${money(redondear(saldoCaja() - salidaCaja))}.`, ok: 'Sí, registrar' }))) return;
+    const idEntrada = nuevoId();
     aplicar(() => {
       const stockPrevio = p.stock, costoPrevio = p.cost || 0, lastCostPrevio = p.lastCost || 0;
       p.stock = stockPrevio + cantidad;
       p.cost = p.stock > 0 ? Math.round(((stockPrevio * costoPrevio) + (cantidad * costo)) / p.stock * 10000) / 10000 : costo;
       p.lastCost = costo;
-      entradas.push({ id: nuevoId(), productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, costoPrevio, lastCostPrevio });
+      entradas.push({ id: idEntrada, productoId: p.id, cantidad, costoUnitario: costo, total, fecha, diasGranja, ...(vence ? { vence } : {}), ...(enPanal ? { panales: n, costoPanal: costoIn } : {}), ...(proveedorId ? { proveedorId } : {}), pagado, abonos, notas, ...(recibidoPor ? { recibidoPor } : {}), ...(documentoProveedor ? { documentoProveedor } : {}), costoPrevio, lastCostPrevio });
+      anotarCaja('egreso', salidaCaja, `Compra · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${proveedorId && proveedor(proveedorId) ? ' · ' + proveedor(proveedorId).nombre : ''}`, 'compra', idEntrada);
     }, `Entrada guardada · ${enPanal ? num(n) + ' panales de' : num(cantidad)} ${p.name}${parcial ? ' · debes ' + money(total - pagado) : ''}`);
-    memoCompra = { proveedorId: proveedorId || '', pago: parcial ? 'parcial' : 'todo' };
+    memoCompra = { proveedorId: proveedorId || '', pago: parcial ? 'parcial' : 'todo', origen: origenPago, recibio: recibidoPor };
     // Solo si la compra se guardó (si falló, el estado se revirtió y no hay comprobante que mostrar).
     if (entradas.length > nEntradas) abrirComprobanteCompra(entradas[entradas.length - 1].id); // dice si se pagó todo y cuánto queda pendiente
     repintar();
@@ -763,16 +793,18 @@ function formAbono({ clienteId, ventaId }) {
     <form id="f-abono" novalidate>
       <p class="muted" style="margin-bottom:12px">${v ? 'Abono a este pedido.' : 'Se aplica primero a los pedidos más viejos.'} Debe ${money(maximo)}.</p>
       <label class="field"><span>Monto que abona</span><input id="ab-monto" type="number" inputmode="decimal" min="0.01" step="any" max="${esc(maximo)}" placeholder="0"></label>
+      ${cajaActiva() ? `<p class="muted" style="margin:-4px 0 6px">El abono entra en:</p>${segHTML('abmedio', [['efectivo', 'Efectivo (a la caja)'], ['transferencia', 'Transferencia']], 'efectivo', 'Abono en')}` : ''}
       <button class="btn btn-teal" type="submit">Guardar abono</button>
     </form>`, b => $('#f-abono', b).addEventListener('submit', e => {
     e.preventDefault();
     let monto = redondear(leerNum($('#ab-monto', b).value));
     if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
     if (monto > maximo) monto = maximo;
+    const medioAb = ($('input[name=abmedio]:checked', b) || {}).value === 'transferencia' ? 'transferencia' : 'efectivo';
     aplicar(() => {
       const objetivo = v ? ventas.filter(x => x.id === v.id) : ventas.filter(x => x.clienteId === cid && debeVenta(x) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
       let resto = monto;
-      for (const x of objetivo) { if (resto <= 0) break; const aplica = Math.min(resto, debeVenta(x)); x.pagado = redondear((x.pagado || 0) + aplica); (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto = redondear(resto - aplica); }
+      for (const x of objetivo) { if (resto <= 0) break; const aplica = Math.min(resto, debeVenta(x)); x.pagado = redondear((x.pagado || 0) + aplica); (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto = redondear(resto - aplica); if (medioAb === 'efectivo') anotarCaja('ingreso', aplica, `Abono · ${(cliente(x.clienteId) || {}).nombre || 'cliente'}`, 'abono', x.id); }
     }, `Abono de ${money(monto)} guardado`);
     cerrarHoja(); verCliente(cid); repintar();
   }));
@@ -868,7 +900,7 @@ function verProveedor(id) {
 }
 
 // Aplica un pago a las compras (la indicada, o las más viejas primero) y devuelve el detalle para mostrarlo.
-function aplicarPagoProveedor(provId, entradaId, monto) {
+function aplicarPagoProveedor(provId, entradaId, monto, origen = 'otro') {
   const detalle = [];
   const ok = aplicar(() => {
     const objetivo = entradaId ? entradas.filter(x => x.id === entradaId) : entradas.filter(x => x.proveedorId === provId && debeEntrada(x) > 0).sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
@@ -877,6 +909,7 @@ function aplicarPagoProveedor(provId, entradaId, monto) {
       if (resto <= 0) break;
       const aplica = Math.min(resto, debeEntrada(x));
       x.pagado = redondear((x.pagado ?? x.total) + aplica); (x.abonos = x.abonos || []).push({ fecha: hoy(), monto: aplica }); resto = redondear(resto - aplica);
+      if (origen === 'caja') anotarCaja('egreso', aplica, `Pago a ${(proveedor(provId) || {}).nombre || 'proveedor'}`, 'pago', x.id);
       detalle.push({ id: x.id, fecha: x.fecha, productoId: x.productoId, aplicado: aplica, resta: debeEntrada(x), total: x.total });
     }
   }, '');
@@ -903,21 +936,31 @@ function formPagoProveedor({ proveedorId, entradaId }) {
     <form id="f-pago-prov" novalidate>
       <p class="muted" style="margin-bottom:12px">${e0 ? 'Pago a esta compra.' : 'Se aplica primero a las compras más viejas.'} Le debes ${money(maximo)}.</p>
       <label class="field"><span>Monto que pagas</span><input id="pp-monto" type="number" inputmode="decimal" min="0.01" step="any" max="${esc(maximo)}" placeholder="0"></label>
+      ${cajaActiva() ? `<p class="muted" style="margin:-4px 0 6px">El pago sale de:</p>${segHTML('ppo', [['caja', 'Caja (efectivo)'], ['otro', 'Banco / otro']], 'caja', 'Pago con')}` : ''}
       <button class="btn btn-teal" type="submit">Guardar pago</button>
-    </form>`, b => $('#f-pago-prov', b).addEventListener('submit', ev => {
+    </form>`, b => $('#f-pago-prov', b).addEventListener('submit', async ev => {
     ev.preventDefault();
     let monto = redondear(leerNum($('#pp-monto', b).value));
     if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
     if (monto > maximo) monto = maximo;
-    const detalle = aplicarPagoProveedor(pid, entradaId, monto);
+    const origen = cajaActiva() && ($('input[name=ppo]:checked', b) || {}).value !== 'otro' ? 'caja' : 'otro';
+    if (origen === 'caja' && monto > saldoCaja() && !(await confirmar({ titulo: 'La caja no alcanza', texto: `En la caja hay ${money(saldoCaja())} y este pago es de ${money(monto)}. ¿Registrarlo igual?`, ok: 'Sí, registrar' }))) return;
+    const detalle = aplicarPagoProveedor(pid, entradaId, monto, origen);
     if (!detalle) return;
     cerrarHoja(); resultadoPagoProveedor(pid, monto, detalle); repintar();
   }));
 }
-function pagarCompraCompleta(entradaId) {
+async function pagarCompraCompleta(entradaId) {
   const e = entradas.find(x => x.id === entradaId); if (!e || !e.proveedorId) return;
   const monto = debeEntrada(e); if (monto <= 0) return;
-  const detalle = aplicarPagoProveedor(e.proveedorId, entradaId, monto);
+  let origen = 'otro';
+  if (cajaActiva()) {
+    const r = await elegir('¿De dónde sale el pago?', `Se pagan ${money(monto)}. En la caja hay ${money(saldoCaja())}.`, [{ v: 'caja', t: 'De la caja (efectivo)' }, { v: 'otro', t: 'Banco / otro', cls: 'btn-ghost' }, { v: 'cancelar', t: 'Cancelar', cls: 'btn-ghost' }]);
+    if (r === 'cancelar') return;
+    origen = r;
+    if (origen === 'caja' && monto > saldoCaja() && !(await confirmar({ titulo: 'La caja no alcanza', texto: `En la caja hay ${money(saldoCaja())} y este pago es de ${money(monto)}. ¿Registrarlo igual?`, ok: 'Sí, registrar' }))) return;
+  }
+  const detalle = aplicarPagoProveedor(e.proveedorId, entradaId, monto, origen);
   if (!detalle) return;
   cerrarHoja(); resultadoPagoProveedor(e.proveedorId, monto, detalle); repintar();
 }
@@ -1164,7 +1207,7 @@ function comprobanteCompraHTML(grupo) {
       <div class="doc-num"><div class="doc-tipo">COMPROBANTE DE COMPRA</div><div class="doc-n">${e0.numero ? 'N° ' + esc(numeroTxtCompra(e0.numero)) : 'Borrador · el número se asigna al imprimir'}</div><div>Fecha: ${verFecha(e0.fecha)}</div></div>
     </header>
     <section class="doc-cliente"><h3>Proveedor</h3>
-      <div><strong>${esc(pv ? pv.nombre : 'Sin proveedor registrado')}</strong></div>${pv ? linea('Teléfono: ', pv.telefono) + linea('Notas: ', pv.notas) : ''}</section>
+      <div><strong>${esc(pv ? pv.nombre : 'Sin proveedor registrado')}</strong></div>${pv ? linea('Teléfono: ', pv.telefono) + linea('Notas: ', pv.notas) : ''}${linea('Remisión / factura del proveedor: ', e0.documentoProveedor)}</section>
     <div class="doc-estado ${pendiente > 0 ? 'pend' : 'ok'}">${estado}</div>
     <table class="doc-tabla"><thead><tr><th>Descripción</th><th class="num">Cantidad</th><th class="num">V. unitario</th><th class="num">V. total</th></tr></thead><tbody>${filas}</tbody></table>
     <div class="doc-totales">
@@ -1174,7 +1217,7 @@ function comprobanteCompraHTML(grupo) {
     </div>
     <h3 class="doc-sub">Pagos registrados</h3>
     <table class="doc-tabla doc-pagos"><thead><tr><th>Fecha</th><th>Concepto</th><th class="num">Valor</th></tr></thead><tbody>${filasPagos}</tbody></table>
-    <div class="doc-firmas"><div>Recibe la mercancía</div><div>Entrega (proveedor)</div></div>
+    <div class="doc-firmas"><div>Recibe la mercancía${e0.recibidoPor ? ' · ' + esc(e0.recibidoPor) : ''}</div><div>Entrega (proveedor)</div></div>
     ${notaAnulados}<p class="doc-nota">Comprobante de compra de control interno. No reemplaza la factura del proveedor ni el documento soporte que exija la DIAN cuando aplique.</p>
   </article>`;
 }
@@ -1192,11 +1235,137 @@ function imprimirComprobanteCompra(id) {
   imprimirDocumento();
 }
 
+/* =============== Caja =============== */
+/* Libro de movimientos del EFECTIVO del negocio: ventas y abonos cobrados en efectivo, compras y pagos a proveedores hechos con
+   dinero de la caja, gastos e ingresos manuales. Es un libro: nada se edita ni se borra, una anulación agrega un movimiento
+   contrario. Empieza a contar cuando se activa la caja con su saldo inicial. Cada movimiento guarda quién lo registró (por
+   ahora siempre «Dueño»; el login de empleados lo llenará). */
+const usuarioActual = () => 'Dueño';
+const cajaActiva = () => config.cajaActiva === true;
+const firmaMov = m => (m.tipo === 'ingreso' ? 1 : -1) * m.monto;
+const saldoCaja = () => redondear(movimientos.reduce((s, m) => s + firmaMov(m), 0));
+const saldoAntesDe = fecha => redondear(movimientos.filter(m => m.fecha < fecha).reduce((s, m) => s + firmaMov(m), 0));
+const ORIGEN_TXT = { apertura: 'Saldo inicial', venta: 'Venta', abono: 'Abono de cliente', compra: 'Compra', pago: 'Pago a proveedor', manual: 'Manual', anulacion: 'Anulación', ajuste: 'Ajuste de cierre' };
+const segHTML = (name, opciones, sel, etiqueta) => `<div class="seg" role="radiogroup" aria-label="${esc(etiqueta)}">${opciones.map(([v, t]) => `<label><input type="radio" name="${name}" value="${v}" ${v === sel ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>`;
+
+function nuevoMovimiento(tipo, monto, concepto, origen, ref) {
+  return { id: nuevoId(), fecha: hoy(), tipo, monto: redondear(monto), concepto: String(concepto).slice(0, 100), origen, ref: ref ?? null, por: usuarioActual() };
+}
+// Se llama DENTRO de aplicar(): si el guardado falla, el movimiento se deshace junto con el resto. Con la caja apagada no hace nada.
+function anotarCaja(tipo, monto, concepto, origen, ref) {
+  if (!cajaActiva() || !(monto > 0)) return;
+  movimientos.push(nuevoMovimiento(tipo, monto, concepto, origen, ref));
+}
+// Contra-asiento de lo que se anotó para `ref`: lo que entró sale y lo que salió entra. No repite lo ya revertido.
+function revertirCaja(ref, origenes, concepto) {
+  if (!cajaActiva()) return;
+  const ya = new Set(movimientos.filter(m => m.origen === 'anulacion').map(m => m.ref));
+  movimientos.filter(m => m.ref === ref && origenes.includes(m.origen) && !ya.has(m.id))
+    .forEach(m => movimientos.push(nuevoMovimiento(m.tipo === 'ingreso' ? 'egreso' : 'ingreso', m.monto, concepto, 'anulacion', m.id)));
+}
+// Lo que salió de la caja por `ref` y no se ha revertido.
+function salidaNetaCaja(ref, origenes) {
+  const ya = new Set(movimientos.filter(m => m.origen === 'anulacion').map(m => m.ref));
+  return redondear(movimientos.filter(m => m.ref === ref && m.tipo === 'egreso' && origenes.includes(m.origen) && !ya.has(m.id)).reduce((s, m) => s + m.monto, 0));
+}
+
+let cajaDia = '';
+VISTAS.caja = () => {
+  if (!cajaActiva()) return `
+    ${cabecera('Caja', 'mas')}
+    <form id="f-caja-ini" class="card" novalidate>
+      <h3>Activar la caja</h3>
+      <p class="muted" style="margin-bottom:12px">Lleva el efectivo del negocio: lo que entra por ventas y abonos cobrados en efectivo, y lo que sale al pagar mercancía y gastos. Al final del día se cierra contando el dinero. Desde que la actives, cada movimiento en efectivo queda anotado.</p>
+      <label class="field"><span>Dinero que hay hoy en la caja</span><input id="ci-saldo" type="number" inputmode="decimal" min="0" step="any" value="0"></label>
+      <button class="btn btn-teal" type="submit">Activar caja</button>
+    </form>`;
+  const dia = cajaDia || hoy(), esHoy = dia === hoy();
+  const delDia = movimientos.filter(m => m.fecha === dia).sort((a, b) => b.id - a.id);
+  const entro = redondear(delDia.filter(m => m.tipo === 'ingreso' && m.origen !== 'apertura').reduce((s, m) => s + m.monto, 0));
+  const salio = redondear(delDia.filter(m => m.tipo === 'egreso').reduce((s, m) => s + m.monto, 0));
+  const abre = redondear(saldoAntesDe(dia) + delDia.filter(m => m.origen === 'apertura').reduce((s, m) => s + m.monto, 0));
+  const alCierre = redondear(abre + entro - salio);
+  const revertidos = new Set(movimientos.filter(m => m.origen === 'anulacion').map(m => m.ref));
+  const ultimosCierres = cierres.slice().sort((a, b) => b.id - a.id).slice(0, 5);
+  return `
+    ${cabecera('Caja', 'mas')}
+    <section class="card">
+      <div class="stats">
+        <div class="stat teal"><div class="n">${money(esHoy ? saldoCaja() : alCierre)}</div><div class="l">${esHoy ? 'En caja ahora' : 'Saldo al terminar el día'}</div></div>
+        <div class="stat"><div class="n">${money(abre)}</div><div class="l">Con lo que abrió</div></div>
+        <div class="stat"><div class="n pos">${money(entro)}</div><div class="l">Entró</div></div>
+        <div class="stat"><div class="n neg">${money(salio)}</div><div class="l">Salió</div></div>
+      </div>
+      ${esHoy ? `<div class="btn-row"><button class="btn btn-danger" data-act="caja-gasto">Registrar gasto</button><button class="btn btn-ghost" data-act="caja-ingreso">Registrar ingreso</button></div>
+      <div class="btn-row"><button class="btn btn-teal" data-act="caja-cierre">Cerrar la caja (contar)</button></div>` : ''}
+    </section>
+    <div class="period-nav no-print"><button class="icon-btn" data-act="caja-dia" data-d="-1" aria-label="Día anterior">&lsaquo;</button><div class="lbl">${esHoy ? 'Hoy · ' : ''}${verFecha(dia)}</div><button class="icon-btn" data-act="caja-dia" data-d="1" aria-label="Día siguiente" ${esHoy ? 'disabled' : ''}>&rsaquo;</button></div>
+    <section class="card"><h3>Movimientos del día</h3>
+      ${delDia.length ? `<div class="list">${delDia.map(m => `<div class="row"><div class="main"><div class="t">${esc(m.concepto)}</div><div class="s">${esc(ORIGEN_TXT[m.origen] || m.origen)} · ${esc(m.por)}</div></div><div class="r"><strong class="${m.tipo === 'ingreso' ? 'pos' : 'neg'}">${m.tipo === 'ingreso' ? '+' : '−'}${money(m.monto)}</strong>${m.origen === 'manual' && !revertidos.has(m.id) ? `<br><button class="link-btn" data-act="caja-anular" data-id="${esc(m.id)}">Anular</button>` : ''}</div></div>`).join('')}</div>` : '<p class="empty">No hubo movimientos este día.</p>'}
+    </section>
+    ${ultimosCierres.length ? `<section class="card"><h3>Últimos cierres</h3><div class="list">${ultimosCierres.map(c => `<div class="row"><div class="main"><div class="t">${verFecha(c.fecha)} · contó ${money(c.contado)}</div><div class="s">Debía haber ${money(c.esperado)} · ${esc(c.por)}${c.nota ? ' · ' + esc(c.nota) : ''}</div></div><div class="r"><strong class="${c.diferencia === 0 ? 'pos' : 'neg'}">${c.diferencia === 0 ? 'Cuadró' : (c.diferencia > 0 ? 'Sobran ' : 'Faltan ') + money(Math.abs(c.diferencia))}</strong></div></div>`).join('')}</div></section>` : ''}`;
+};
+MONTAR.caja = () => {
+  const f = $('#f-caja-ini');
+  if (f) f.addEventListener('submit', e => {
+    e.preventDefault();
+    const saldo = leerNum($('#ci-saldo').value);
+    if (!(saldo >= 0 && enRango(saldo))) return aviso('Escribe cuánto dinero hay en la caja (puede ser 0)', true);
+    aplicar(() => { config.cajaActiva = true; anotarCaja('ingreso', saldo, 'Saldo inicial de la caja', 'apertura', null); }, 'Caja activada');
+    repintar();
+  });
+};
+
+function formMovimientoCaja(tipo) {
+  const egreso = tipo === 'egreso';
+  hoja(egreso ? 'Registrar gasto' : 'Registrar ingreso', `
+    <form id="f-mov" novalidate>
+      <label class="field"><span>Concepto</span><input id="mv-concepto" type="text" maxlength="100" placeholder="${egreso ? 'Ej: transporte, bolsas, almuerzo' : 'Ej: cambio, aporte del dueño'}" autocomplete="off"></label>
+      <label class="field"><span>Monto</span><input id="mv-monto" type="number" inputmode="decimal" min="0.01" step="any" placeholder="0">${egreso ? `<div class="hint">En la caja hay ${money(saldoCaja())}.</div>` : ''}</label>
+      <button class="btn ${egreso ? 'btn-danger' : 'btn-teal'}" type="submit">Guardar</button>
+    </form>`, b => $('#f-mov', b).addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const concepto = $('#mv-concepto', b).value.trim(), monto = redondear(leerNum($('#mv-monto', b).value));
+    if (!concepto) return aviso('Escribe el concepto', true);
+    if (!(monto > 0 && enRango(monto))) return aviso('Escribe un monto', true);
+    if (egreso && monto > saldoCaja() && !(await confirmar({ titulo: 'La caja no alcanza', texto: `En la caja hay ${money(saldoCaja())} y este gasto es de ${money(monto)}. ¿Registrarlo igual? La caja quedaría en ${money(redondear(saldoCaja() - monto))}.`, ok: 'Sí, registrar' }))) return;
+    aplicar(() => anotarCaja(tipo, monto, concepto, 'manual', null), egreso ? 'Gasto registrado' : 'Ingreso registrado');
+    cerrarHoja(); repintar();
+  }));
+}
+
+function formCierreCaja() {
+  const esperado = saldoCaja();
+  hoja('Cerrar la caja', `
+    <form id="f-cierre" novalidate>
+      <p class="muted" style="margin-bottom:12px">Cuenta el dinero que hay en la caja. La app compara con lo que debería haber.</p>
+      <div class="stats" style="margin-bottom:12px"><div class="stat"><div class="n">${money(esperado)}</div><div class="l">Debería haber</div></div><div class="stat"><div class="n" id="ci-dif">—</div><div class="l">Diferencia</div></div></div>
+      <label class="field"><span>Dinero contado</span><input id="ci-contado" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
+      <label class="field"><span>Nota (opcional)</span><input id="ci-nota" type="text" maxlength="200" autocomplete="off"></label>
+      <button class="btn btn-teal" type="submit">Cerrar caja</button>
+    </form>`, b => {
+    const dif = () => { const c = leerNum($('#ci-contado', b).value); $('#ci-dif', b).textContent = Number.isFinite(c) ? (redondear(c - esperado) === 0 ? 'Cuadra' : (c > esperado ? '+' : '−') + money(Math.abs(redondear(c - esperado)))) : '—'; };
+    $('#f-cierre', b).addEventListener('input', dif);
+    $('#f-cierre', b).addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const contado = redondear(leerNum($('#ci-contado', b).value)), nota = $('#ci-nota', b).value.trim().slice(0, 200);
+      if (!(contado >= 0 && enRango(contado))) return aviso('Escribe el dinero contado', true);
+      const diferencia = redondear(contado - esperado);
+      if (diferencia !== 0 && !(await confirmar({ titulo: 'Hay una diferencia', texto: `Debería haber ${money(esperado)} y contaste ${money(contado)}: ${diferencia > 0 ? 'sobran' : 'faltan'} ${money(Math.abs(diferencia))}. Se anota como ${diferencia > 0 ? 'sobrante' : 'faltante'} y la caja queda en ${money(contado)}. ¿Cerrar?`, ok: 'Sí, cerrar' }))) return;
+      aplicar(() => {
+        cierres.push({ id: nuevoId(), fecha: hoy(), esperado, contado, diferencia, nota, por: usuarioActual() });
+        if (diferencia !== 0) anotarCaja(diferencia > 0 ? 'ingreso' : 'egreso', Math.abs(diferencia), diferencia > 0 ? 'Sobrante en el cierre' : 'Faltante en el cierre', 'ajuste', null);
+      }, diferencia === 0 ? 'Caja cerrada: cuadró' : `Caja cerrada: ${diferencia > 0 ? 'sobran' : 'faltan'} ${money(Math.abs(diferencia))}`);
+      cerrarHoja(); repintar();
+    });
+  });
+}
+
 /* =============== Más =============== */
 VISTAS.mas = () => `
   ${cabecera('Más')}
   <div class="card menu"><div class="list">
-    ${[['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
+    ${[['caja', 'vender', 'Caja', 'Efectivo, gastos y cierre del día'], ['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
       .map(([v, i, t, s]) => `<button class="row" data-act="ir" data-v="${v}"><span class="ico">${icono(i)}</span><span class="main"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">&rsaquo;</span></button>`).join('')}
   </div></div>
   <div class="card"><h3>Instalar en el celular</h3>
@@ -1674,6 +1843,16 @@ const ACCIONES = {
   comprobante: el => abrirComprobante(Number(el.dataset.id)),
   'comprobante-compra': el => abrirComprobanteCompra(Number(el.dataset.id)),
   'imprimir-doc': el => { const id = el && el.dataset ? Number(el.dataset.id) : NaN; if (id && el.dataset.tipo === 'compra') imprimirComprobanteCompra(id); else if (id) imprimirComprobante(id); else imprimirDocumento(); },
+  'caja-gasto': () => formMovimientoCaja('egreso'),
+  'caja-ingreso': () => formMovimientoCaja('ingreso'),
+  'caja-cierre': () => formCierreCaja(),
+  'caja-dia': el => { const d = sumarDias(cajaDia || hoy(), Number(el.dataset.d)); cajaDia = d >= hoy() ? '' : d; repintar(); },
+  'caja-anular': async el => {
+    const m = movimientos.find(x => x.id === Number(el.dataset.id)); if (!m) return;
+    if (!(await confirmar({ titulo: 'Anular movimiento', texto: `Se anota un movimiento contrario por ${money(m.monto)} («${m.concepto}»). El original no se borra. ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    aplicar(() => anotarCaja(m.tipo === 'ingreso' ? 'egreso' : 'ingreso', m.monto, `Anulación: ${m.concepto}`, 'anulacion', m.id), 'Movimiento anulado');
+    repintar();
+  },
   'cliente-nuevo': el => formCliente(null, el.dataset.vuelta),
   'proveedor-nuevo': el => formProveedor(null, el.dataset.vuelta),
   'proveedor-ver': el => verProveedor(el.dataset.id),
@@ -1684,9 +1863,18 @@ const ACCIONES = {
   'cliente-editar': el => formCliente(cliente(el.dataset.id)),
   'cliente-wa': el => whatsapp(el.dataset.id),
   abonar: el => formAbono({ clienteId: el.dataset.cli, ventaId: el.dataset.venta ? Number(el.dataset.venta) : null }),
-  pagar: el => {
+  pagar: async el => {
     const id = Number(el.dataset.id), v0 = ventas.find(x => x.id === id); if (!v0) return;
-    aplicar(() => { const v = ventas.find(x => x.id === id); (v.abonos = v.abonos || []).push({ fecha: hoy(), monto: debeVenta(v) }); v.pagado = v.total; }, 'Pedido pagado completo');
+    let medio = 'efectivo';
+    if (cajaActiva()) {
+      medio = await elegir('¿Cómo pagó?', `Faltan ${money(debeVenta(v0))} de este pedido.`, [{ v: 'efectivo', t: 'Efectivo (entra a la caja)' }, { v: 'transferencia', t: 'Transferencia', cls: 'btn-ghost' }, { v: 'cancelar', t: 'Cancelar', cls: 'btn-ghost' }]);
+      if (medio === 'cancelar') return;
+    }
+    aplicar(() => {
+      const v = ventas.find(x => x.id === id), monto = debeVenta(v);
+      (v.abonos = v.abonos || []).push({ fecha: hoy(), monto }); v.pagado = v.total;
+      if (medio === 'efectivo') anotarCaja('ingreso', monto, `Pago completo · ${(cliente(v.clienteId) || {}).nombre || 'cliente'}`, 'abono', v.id);
+    }, 'Pedido pagado completo');
     const cid = v0.clienteId; cerrarHoja(); verCliente(cid); repintar();
   },
   'venta-anular': async el => {
@@ -1694,10 +1882,12 @@ const ACCIONES = {
     const abonado = v.tipoPago === 'credito' ? (v.pagado || 0) : 0;
     const aviso_ab = abonado > 0 ? ` ATENCIÓN: esta venta ya tiene ${money(abonado)} abonados. Al anularla ese dinero deja de contar como cobrado: si ya lo recibiste, devuélvelo o anótalo aparte.` : '';
     const aviso_num = v.numero ? ` Esta venta está en el comprobante ${numeroTxt(v.numero)}, que ya se pudo imprimir: ese comprobante cambiará (el número no se reutiliza y quedará una nota de venta anulada).` : '';
-    if (!(await confirmar({ titulo: 'Anular venta', texto: `Se borra la venta de ${num(v.cantidad)} y las existencias vuelven a la bodega.${aviso_ab}${aviso_num} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    const aviso_caja = cajaActiva() && movimientos.some(m => m.ref === v.id && m.tipo === 'ingreso' && ['venta', 'abono'].includes(m.origen)) ? ' El efectivo que se cobró por esta venta saldrá de la caja (queda anotado como anulación).' : '';
+    if (!(await confirmar({ titulo: 'Anular venta', texto: `Se borra la venta de ${num(v.cantidad)} y las existencias vuelven a la bodega.${aviso_ab}${aviso_num}${aviso_caja} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
     aplicar(() => {
       const p = prod(v.productoId); if (p) p.stock += (v.descontado ?? v.cantidad);
       if (v.numero) { const c = cliente(v.clienteId); config.anulados = [...config.anulados, { numero: v.numero, fecha: v.fecha, cliente: c ? c.nombre.slice(0, 100) : '', total: v.total }].slice(-MAX_ANULADOS); }
+      revertirCaja(v.id, ['venta', 'abono'], 'Anulación de venta');
       ventas = ventas.filter(x => x.id !== v.id);
     }, 'Venta anulada');
     repintar();
@@ -1707,6 +1897,14 @@ const ACCIONES = {
     const p0 = prod(e.productoId);
     if (p0 && p0.stock < e.cantidad) return aviso(`No se puede anular: ya se vendió parte de esta entrada (en bodega quedan ${num(p0.stock)} de ${num(e.cantidad)}).`, true);
     if (!(await confirmar({ titulo: 'Anular entrada', texto: `Se borra esta entrada de ${num(e.cantidad)} y se restan de la bodega.${e.proveedorId && (e.pagado ?? 0) > 0 ? ` Ya se habían pagado ${money(e.pagado)} al proveedor: ese dinero queda como saldo a favor tuyo con ese proveedor.` : ''}${e.numero ? ` Esta compra está en el comprobante ${numeroTxtCompra(e.numero)}, que ya se pudo imprimir: ese comprobante cambiará (el número no se reutiliza y quedará una nota de compra anulada).` : ''} ¿Anular?`, ok: 'Anular', peligro: true }))) return;
+    // Si parte de lo pagado salió de la caja, se pregunta si el proveedor devolvió ese dinero.
+    const salio = cajaActiva() ? salidaNetaCaja(e.id, ['compra', 'pago']) : 0;
+    let devuelto = false;
+    if (salio > 0) {
+      const r = await elegir('Pagaste desde la caja', `De esta compra se pagaron ${money(salio)} con dinero de la caja. ¿El proveedor te devolvió ese dinero?`, [{ v: 'si', t: 'Sí, volvió a la caja' }, { v: 'no', t: 'No: queda como saldo a favor con el proveedor', cls: 'btn-ghost' }, { v: 'cancelar', t: 'Cancelar', cls: 'btn-ghost' }]);
+      if (r === 'cancelar') return;
+      devuelto = r === 'si';
+    }
     aplicar(() => {
       const p = prod(e.productoId), resto = entradas.filter(x => x.id !== e.id);
       if (p) {
@@ -1716,8 +1914,10 @@ const ACCIONES = {
       }
       entradas = resto;
       if (e.numero) { const pr = proveedor(e.proveedorId); config.anuladosCompra = [...config.anuladosCompra, { numero: e.numero, fecha: e.fecha, cliente: pr ? pr.nombre.slice(0, 100) : '', total: e.total }].slice(-MAX_ANULADOS); }
-      const pv = e.proveedorId && (e.pagado ?? 0) > 0 ? proveedor(e.proveedorId) : null;
-      if (pv) pv.saldoFavor = redondear((pv.saldoFavor || 0) + e.pagado); // lo ya pagado no se pierde: queda a favor del dueño
+      if (devuelto) revertirCaja(e.id, ['compra', 'pago'], 'Devolución del proveedor (compra anulada)');
+      const aFavor = redondear(Math.max(0, (e.pagado ?? 0) - (devuelto ? salio : 0))); // lo pagado que no volvió a la caja queda a favor del dueño
+      const pv = e.proveedorId && aFavor > 0 ? proveedor(e.proveedorId) : null;
+      if (pv) pv.saldoFavor = redondear((pv.saldoFavor || 0) + aFavor);
     }, 'Entrada anulada');
     repintar();
   },
@@ -1763,7 +1963,7 @@ const ACCIONES = {
   'json-import': () => $('#archivo-json').click(),
   'borrar-todo': async () => {
     if (!(await confirmar({ titulo: 'Borrar todos los datos', texto: 'Se borrarán productos, ventas, clientes y entradas de este teléfono. No se puede deshacer.', ok: 'Borrar todo', peligro: true }))) return;
-    aplicar(() => { products = clonar(PRODUCTOS_BASE); entradas = []; ventas = []; clientes = []; ajustes = []; proveedores = []; config = configBase(); }, 'Datos borrados');
+    aplicar(() => { products = clonar(PRODUCTOS_BASE); entradas = []; ventas = []; clientes = []; ajustes = []; proveedores = []; movimientos = []; cierres = []; config = configBase(); }, 'Datos borrados');
     navegar('inicio');
   },
 };
