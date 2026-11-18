@@ -1,0 +1,239 @@
+'use strict';
+/* Empleados, PIN, sesiones y permisos por rol en apps-script/Code.gs (ADR 0002, entrega 1).
+   Lo que se vigila: el PIN y el token nunca quedan en claro en el Sheet, todos los fallos de entrada dan el mismo mensaje,
+   el bloqueo funciona, y el empleado no puede hacer nada de lo que solo es del dueño. */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { cargarScript, post, plano } = require('./arnes-script');
+
+const CLAVE = 'k-secreta';
+const MSJ = 'Usuario o PIN incorrecto, o la cuenta está bloqueada';
+const duenoPost = (s, c) => post(s, { clave: CLAVE, ...c });
+const crear = (s, o = {}) => duenoPost(s, { accion: 'empleadoCrear', nombre: 'Luis Pérez', usuario: 'luis', pin: '4829', ...o });
+const entrar = (s, o = {}) => post(s, { accion: 'login', usuario: 'luis', pin: '4829', ...o });
+const comoEmpleado = (s, token, c) => post(s, { token, ...c });
+const celdas = h => [...h.celdas.values()].map(String);
+const colEmp = { id: 1, usuario: 2, nombre: 3, sal: 4, hash: 5, activo: 6, intentos: 7, bloqueadoHasta: 8, creado: 9 };
+const datosMinimos = { app: 'el-gallinero', products: [], ventas: [], entradas: [], clientes: [] };
+
+/* ---------- alta y PIN ---------- */
+test('empleados · el dueño crea un empleado y el PIN no queda en claro en ningún sitio', () => {
+  const s = cargarScript();
+  const r = crear(s);
+  assert.equal(r.ok, true);
+  assert.deepEqual(Object.keys(r.empleado).sort(), ['activo', 'bloqueado', 'id', 'nombre', 'usuario']);
+  assert.equal(r.empleado.usuario, 'luis');
+  const h = s.libro.get('_empleados');
+  assert.equal(h.oculta, true, 'la pestaña de empleados es oculta');
+  assert.ok(celdas(h).every(c => !c.includes('4829')), 'el PIN no está en ninguna celda');
+  assert.match(String(h.celda(2, colEmp.hash)), /^x[0-9a-f]{64}$/);
+  assert.match(String(h.celda(2, colEmp.sal)), /^x[0-9a-f]{64}$/);
+});
+test('empleados · listar no devuelve el hash ni la sal', () => {
+  const s = cargarScript();
+  crear(s);
+  const l = duenoPost(s, { accion: 'empleadoListar' });
+  assert.equal(l.ok, true);
+  assert.equal(l.empleados.length, 1);
+  assert.ok(!JSON.stringify(l).match(/hash|sal"|x[0-9a-f]{64}/));
+});
+test('empleados · el PIN debe ser de 4 a 6 dígitos, sin repetir ni escalera, y siempre texto', () => {
+  const s = cargarScript();
+  for (const pin of ['123', '1234567', '1111', '000000', '1234', '4321', '56789', 'abcd', '12 34', 4829, null, undefined, ['4829']]) {
+    const r = crear(s, { pin, usuario: 'ana' });
+    assert.equal(r.ok, false, `se aceptó el PIN ${JSON.stringify(pin)}`);
+  }
+  for (const pin of ['4829', '0759', '135790', '9182']) assert.equal(crear(s, { pin, usuario: 'u' + pin }).ok, true, `se rechazó ${pin}`);
+});
+test('empleados · el usuario se normaliza, debe empezar con letra y no se repite', () => {
+  const s = cargarScript();
+  assert.equal(crear(s, { usuario: '  LUIS ' }).empleado.usuario, 'luis');
+  assert.equal(crear(s, { usuario: 'Luis' }).ok, false, 'repetido aunque cambie la mayúscula');
+  for (const usuario of ['1234', 'ab', '9luis', 'lu is', 'luis@x', 'a'.repeat(21), '', null]) assert.equal(crear(s, { usuario }).ok, false, `se aceptó ${usuario}`);
+  assert.equal(crear(s, { nombre: '   ', usuario: 'zoe' }).ok, false, 'sin nombre');
+});
+
+/* ---------- entrada (login) ---------- */
+test('login · entra con usuario y PIN, devuelve un token y solo se guarda su hash', () => {
+  const s = cargarScript();
+  crear(s);
+  const r = entrar(s);
+  assert.equal(r.ok, true);
+  assert.match(r.token, /^[0-9a-f]{64}$/);
+  assert.equal(r.empleado.nombre, 'Luis Pérez');
+  assert.ok(Date.parse(r.vence) > Date.now() + 11 * 3600000 && Date.parse(r.vence) < Date.now() + 13 * 3600000, 'vence en unas 12 horas');
+  const ses = s.libro.get('_sesiones');
+  assert.equal(ses.oculta, true);
+  assert.ok(celdas(ses).every(c => !c.includes(r.token)), 'el token no está en claro');
+  assert.match(String(ses.celda(2, 1)), /^x[0-9a-f]{64}$/);
+});
+test('login · no pide la clave del dueño y no la deja pasar por usuario', () => {
+  const s = cargarScript();
+  crear(s);
+  assert.equal(entrar(s).ok, true);
+  assert.equal(entrar(s, { clave: 'otra' }).ok, true, 'una clave de más no estorba');
+  assert.equal(post(s, { accion: 'login', usuario: 'luis', pin: CLAVE }).ok, false, 'la clave no sirve como PIN');
+});
+test('login · todos los fallos dan exactamente el mismo mensaje (no se averigua quién existe)', () => {
+  const s = cargarScript();
+  crear(s);
+  crear(s, { usuario: 'ana', pin: '7351' });
+  duenoPost(s, { accion: 'empleadoActivo', id: duenoPost(s, { accion: 'empleadoListar' }).empleados[1].id, activo: false });
+  const mensajes = [
+    entrar(s, { usuario: 'nadie' }),                // no existe
+    entrar(s, { pin: '1357' }),                     // PIN mal
+    entrar(s, { usuario: 'ana', pin: '7351' }),     // desactivada
+    entrar(s, { pin: '' }),                         // sin PIN
+    entrar(s, { pin: 4829 }),                       // PIN como número
+    entrar(s, { usuario: undefined }),              // sin usuario
+  ].map(r => { assert.equal(r.ok, false); return r.error; });
+  assert.ok(mensajes.every(m => m === MSJ), JSON.stringify(mensajes));
+});
+test('login · 5 fallos bloquean la cuenta, ni el PIN correcto entra, y vuelve al pasar el tiempo', () => {
+  const s = cargarScript();
+  crear(s);
+  for (let i = 0; i < 4; i++) assert.equal(entrar(s, { pin: '1357' }).ok, false);
+  assert.equal(Number(s.libro.get('_empleados').celda(2, colEmp.intentos)), 4);
+  assert.equal(entrar(s, { pin: '1357' }).ok, false);                 // quinto fallo: se bloquea
+  assert.equal(duenoPost(s, { accion: 'empleadoListar' }).empleados[0].bloqueado, true);
+  assert.equal(entrar(s).ok, false, 'bloqueado: ni el PIN correcto');
+  s.libro.get('_empleados').celdas.set(`2,${colEmp.bloqueadoHasta}`, new Date(Date.now() - 1000).toISOString()); // pasó el tiempo
+  assert.equal(entrar(s).ok, true, 'pasado el bloqueo vuelve a entrar');
+  assert.equal(Number(s.libro.get('_empleados').celda(2, colEmp.intentos)), 0);
+});
+test('login · un acierto antes del límite reinicia el contador de fallos', () => {
+  const s = cargarScript();
+  crear(s);
+  for (let i = 0; i < 4; i++) entrar(s, { pin: '1357' });
+  assert.equal(entrar(s).ok, true);
+  for (let i = 0; i < 4; i++) entrar(s, { pin: '1357' });
+  assert.equal(entrar(s).ok, true, 'no acumuló los 4 fallos anteriores');
+});
+
+/* ---------- permisos ---------- */
+test('permisos · un empleado no puede guardar, leer, traer clientes ni administrar empleados', () => {
+  const s = cargarScript();
+  crear(s);
+  const { token } = entrar(s);
+  for (const c of [{ accion: 'guardar', datos: datosMinimos }, { accion: 'leer' }, { accion: 'clientes' }, { accion: 'empleadoListar' },
+    { accion: 'empleadoCrear', nombre: 'X', usuario: 'xxx', pin: '4829' }, { accion: 'empleadoPin', id: 'e1', pin: '4829' }, { accion: 'empleadoActivo', id: 'e1', activo: false }]) {
+    const r = comoEmpleado(s, token, c);
+    assert.equal(r.ok, false, c.accion);
+    assert.equal(r.prohibido, true, c.accion);
+  }
+  assert.equal(s.libro.get('_respaldo'), undefined, 'no se escribió el respaldo');
+  assert.equal(duenoPost(s, { accion: 'empleadoListar' }).empleados.length, 1, 'no se creó nadie');
+});
+test('permisos · el empleado puede preguntar quién es, y el ping no revela datos del negocio', () => {
+  const s = cargarScript();
+  crear(s);
+  duenoPost(s, { accion: 'guardar', datos: { ...datosMinimos, ventas: [{ id: 1 }], clientes: [{ id: 'c' }] } });
+  const { token } = entrar(s);
+  const yo = comoEmpleado(s, token, { accion: 'yo' });
+  assert.equal(yo.rol, 'empleado');
+  assert.equal(yo.empleado.usuario, 'luis');
+  assert.deepEqual(plano(comoEmpleado(s, token, { accion: 'ping' })), { ok: true, rol: 'empleado' });
+  assert.equal(duenoPost(s, { accion: 'ping' }).ventas, 1, 'al dueño sí le muestra el resumen');
+});
+test('permisos · el dueño sigue pudiendo todo y una acción inventada no existe para nadie', () => {
+  const s = cargarScript();
+  crear(s);
+  assert.equal(duenoPost(s, { accion: 'guardar', datos: datosMinimos }).ok, true);
+  assert.equal(duenoPost(s, { accion: 'leer' }).ok, true);
+  assert.equal(duenoPost(s, { accion: 'yo' }).rol, 'dueno');
+  assert.equal(duenoPost(s, { accion: 'borrarTodo' }).error, 'Acción desconocida');
+  const { token } = entrar(s);
+  assert.equal(comoEmpleado(s, token, { accion: 'borrarTodo' }).error, 'Acción desconocida');
+});
+test('permisos · un token inventado o una clave mala no entran', () => {
+  const s = cargarScript();
+  crear(s);
+  assert.equal(comoEmpleado(s, 'a'.repeat(64), { accion: 'yo' }).ok, false);
+  assert.equal(post(s, { token: 'corto', accion: 'yo' }).ok, false);
+  assert.equal(post(s, { clave: 'mala', accion: 'guardar', datos: datosMinimos }).error, 'Clave incorrecta');
+  assert.equal(post(s, { accion: 'guardar', datos: datosMinimos }).error, 'Clave incorrecta', 'sin credencial');
+  assert.equal(post(s, { clave: ['k-secreta'], accion: 'yo' }).ok, false, 'la clave debe ser texto');
+  assert.equal(s.libro.get('_respaldo'), undefined);
+});
+test('permisos · el token de un empleado no sirve si no es el suyo: cada sesión es de quien entró', () => {
+  const s = cargarScript();
+  crear(s);
+  crear(s, { usuario: 'ana', nombre: 'Ana', pin: '7351' });
+  const a = entrar(s).token, b = entrar(s, { usuario: 'ana', pin: '7351' }).token;
+  assert.equal(comoEmpleado(s, a, { accion: 'yo' }).empleado.usuario, 'luis');
+  assert.equal(comoEmpleado(s, b, { accion: 'yo' }).empleado.usuario, 'ana');
+});
+
+/* ---------- sesiones ---------- */
+test('sesión · vencida avisa «la sesión venció» para que la app pida entrar de nuevo', () => {
+  const s = cargarScript();
+  crear(s);
+  const { token } = entrar(s);
+  s.libro.get('_sesiones').celdas.set('2,4', new Date(Date.now() - 1000).toISOString());
+  const r = comoEmpleado(s, token, { accion: 'yo' });
+  assert.equal(r.ok, false);
+  assert.equal(r.sesion, false);
+  assert.match(r.error, /venció/);
+});
+test('sesión · salir invalida ese token y no los de otro dispositivo', () => {
+  const s = cargarScript();
+  crear(s);
+  const a = entrar(s).token, b = entrar(s).token;
+  assert.equal(comoEmpleado(s, a, { accion: 'salir' }).ok, true);
+  assert.equal(comoEmpleado(s, a, { accion: 'yo' }).ok, false);
+  assert.equal(comoEmpleado(s, b, { accion: 'yo' }).ok, true);
+});
+test('sesión · al entrar se limpian las sesiones vencidas', () => {
+  const s = cargarScript();
+  crear(s);
+  entrar(s);
+  s.libro.get('_sesiones').celdas.set('2,4', new Date(Date.now() - 1000).toISOString());
+  entrar(s);
+  assert.equal(s.libro.get('_sesiones').getLastRow(), 2, 'queda solo la vigente');
+});
+test('sesión · desactivar a un empleado cierra sus sesiones y no puede volver a entrar', () => {
+  const s = cargarScript();
+  const { empleado } = crear(s);
+  const { token } = entrar(s);
+  assert.equal(duenoPost(s, { accion: 'empleadoActivo', id: empleado.id, activo: false }).empleado.activo, false);
+  assert.equal(comoEmpleado(s, token, { accion: 'yo' }).ok, false);
+  assert.equal(entrar(s).ok, false);
+  duenoPost(s, { accion: 'empleadoActivo', id: empleado.id, activo: true });
+  assert.equal(entrar(s).ok, true, 'reactivado, entra');
+});
+test('sesión · cambiar el PIN cambia el hash, cierra las sesiones y el PIN viejo deja de servir', () => {
+  const s = cargarScript();
+  const { empleado } = crear(s);
+  const { token } = entrar(s);
+  const hashViejo = s.libro.get('_empleados').celda(2, colEmp.hash);
+  const r = duenoPost(s, { accion: 'empleadoPin', id: empleado.id, pin: '9182' });
+  assert.equal(r.ok, true);
+  assert.notEqual(s.libro.get('_empleados').celda(2, colEmp.hash), hashViejo);
+  assert.equal(comoEmpleado(s, token, { accion: 'yo' }).ok, false, 'su sesión se cerró');
+  assert.equal(entrar(s).ok, false, 'PIN viejo');
+  assert.equal(entrar(s, { pin: '9182' }).ok, true, 'PIN nuevo');
+  assert.equal(duenoPost(s, { accion: 'empleadoPin', id: empleado.id, pin: '1111' }).ok, false, 'el PIN nuevo también se valida');
+  assert.equal(duenoPost(s, { accion: 'empleadoPin', id: 'no-existe', pin: '9182' }).ok, false);
+});
+test('sesión · cambiar el PIN desbloquea una cuenta bloqueada', () => {
+  const s = cargarScript();
+  const { empleado } = crear(s);
+  for (let i = 0; i < 5; i++) entrar(s, { pin: '1357' });
+  assert.equal(entrar(s).ok, false);
+  duenoPost(s, { accion: 'empleadoPin', id: empleado.id, pin: '9182' });
+  assert.equal(entrar(s, { pin: '9182' }).ok, true);
+});
+test('sesión · dos empleados con el mismo PIN tienen hashes distintos (sal propia)', () => {
+  const s = cargarScript();
+  crear(s);
+  crear(s, { usuario: 'ana', nombre: 'Ana', pin: '4829' });
+  const h = s.libro.get('_empleados');
+  assert.notEqual(h.celda(2, colEmp.hash), h.celda(3, colEmp.hash));
+  assert.notEqual(h.celda(2, colEmp.sal), h.celda(3, colEmp.sal));
+});
+test('compatibilidad · sin empleados el dueño con su clave funciona igual que antes', () => {
+  const s = cargarScript();
+  assert.equal(duenoPost(s, { accion: 'ping' }).tieneDatos, false);
+  assert.equal(duenoPost(s, { accion: 'guardar', datos: datosMinimos }).ok, true);
+  assert.equal(s.libro.get('_empleados'), undefined, 'no se crea ninguna pestaña de empleados si no se usan');
+});
