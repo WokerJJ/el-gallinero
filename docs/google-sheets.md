@@ -36,7 +36,7 @@ El teléfono sigue siendo la fuente de los datos: el Sheet es un espejo. Si se c
 WhatsApp no deja exportar la lista de clientes: los clientes son los **contactos guardados en el teléfono**. La ruta es sacarlos de la agenda y pegarlos en la plantilla:
 
 1. **Contactos a un archivo.** En Android (o un iPhone con los contactos en Google): [contacts.google.com](https://contacts.google.com) → seleccionar → *Exportar* → *CSV de Google*. En un iPhone sin Google: [icloud.com](https://www.icloud.com) → Contactos → seleccionar todos → *Exportar vCard*, súbelo en contacts.google.com (*Importar*) y expórtalo como CSV.
-2. Abre el CSV en Hojas de cálculo y copia a la pestaña **Importar clientes** de la plantilla (desde la fila 2):
+2. Abre el CSV en Hojas de cálculo y copia a la pestaña **Cargar clientes** de la plantilla (desde la fila 2):
    - **Columna A (nombre):** la columna del nombre completo (*Name*) o, si no la hay, junta **First Name** y **Last Name**.
    - **Columna B (teléfono):** solo **Phone 1 - Value**. Ignora las demás columnas de teléfono (*Phone 2*, *Phone 3*…) y, si una celda trae varios números separados por ` ::: `, la app toma el primero.
    - **Columna C (notas o dirección):** opcional.
@@ -46,7 +46,8 @@ WhatsApp no deja exportar la lista de clientes: los clientes son los **contactos
 **Límites y cuidados:**
 
 - Se leen hasta **5.000 filas con nombre** (las filas vacías no cuentan). Si hay más, la app avisa: «Solo se leyeron las primeras 5000 filas».
-- La pestaña **Importar clientes NO entra en el respaldo oculto** (`_respaldo`): los clientes que traigas quedan en la app, y de ahí sí se respaldan, pero la lista pegada en esa pestaña se pierde si borras el Sheet. Guarda el CSV original o vuelve a pegarlo cuando haga falta.
+- **Clientes** y **Cargar clientes** no son lo mismo: *Clientes* es el espejo de la app (la app la reescribe en cada envío; no pegues nada ahí) y *Cargar clientes* es de entrada (la llenas tú y la app solo la lee). *PANEL CLIENTES* solo resume lo que hay en *Clientes*.
+- La pestaña **Cargar clientes NO entra en el respaldo oculto** (`_respaldo`): los clientes que traigas quedan en la app, y de ahí sí se respaldan, pero la lista pegada en esa pestaña se pierde si borras el Sheet. Guarda el CSV original o vuelve a pegarlo cuando haga falta.
 - Si falta esa pestaña, el script la crea (con su cabecera) la primera vez que pulsas **Traer clientes del Sheet**.
 - Teléfonos: de cada celda se toma solo el primer número (se corta en «ext», «x», `/`, `;` o `,`) y deben tener entre 7 y 12 dígitos; lo demás se guarda sin teléfono. El +57 y el prefijo 00 se ignoran, pero otro país (+1…) cuenta como un número distinto.
 - Si varias personas ya guardadas **sin teléfono** tienen el mismo nombre que una fila, la app no adivina a cuál pertenece: no toca ninguna y lo cuenta como *ambiguo* en el aviso de confirmación.
@@ -73,7 +74,7 @@ El script solo reescribe el bloque de la tabla (las columnas de cada pestaña, d
 | Pérdidas | Fecha · Producto · Cantidad · Costo unitario · Motivo |
 | Caja | Fecha · Concepto · Ingreso · Egreso · Origen · Registró |
 | Cierres | Fecha · Esperado · Contado · Diferencia · Nota · Registró |
-| Importar clientes (se llena a mano) | Nombre · Teléfono · Notas / dirección |
+| Cargar clientes (se llena a mano) | Nombre · Teléfono · Notas / dirección |
 
 - En **Compras**, *Debe* es lo que falta por pagar al proveedor (cuentas por pagar); las compras anteriores a esta función se toman como pagadas por completo.
 - En **Compras**, *Comprobante* es el número del comprobante de compra (con su propio prefijo y consecutivo, por ejemplo `CP-000001`).

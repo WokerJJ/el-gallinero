@@ -16,15 +16,17 @@
  * que los paneles pueden leer sin tocar el JSON: B1 fecha del último envío, B2 nº de ventas, B3 nº de clientes,
  * B4 alerta de stock bajo, B5 margen sugerido (%) y B6 vida útil del huevo (días).
  *
- * Además, la pestaña «Importar clientes» es de entrada: tú la llenas y la app la lee (acción «clientes»).
+ * Además, la pestaña «Cargar clientes» es de entrada: tú la llenas y la app la lee (acción «clientes»).
  * Úsala con la plantilla de Excel del proyecto (carpeta plantilla/).
  */
 
 // Escribe aquí una clave tuya (la misma que pondrás en la app). Funciona como contraseña del enlace.
 const CLAVE = 'CAMBIA-ESTA-CLAVE';
 
-// «Importar clientes»: columnas de entrada (la plantilla de Excel se genera a partir de esta lista).
+// «Cargar clientes»: columnas de entrada (la plantilla de Excel se genera a partir de esta lista).
 const HOJA_IMPORTAR = ['Nombre', 'Teléfono', 'Notas / dirección'];
+const NOMBRE_CARGAR = 'Cargar clientes'; // pestaña de ENTRADA: la app nunca la escribe ni la borra (la pestaña «Clientes» es el espejo y sí se reescribe)
+const NOTA_CARGAR = ['Aquí pegas tú los clientes nuevos', 'Desde la fila 2: A nombre, B teléfono, C notas. Esta pestaña no se borra.', 'En la app: Más → Google Sheets → «Traer clientes del Sheet».'];
 const MAX_CLIENTES = 5000; // tope de filas con nombre que se entregan a la app en una lectura
 
 const TROZO = 40000; // una celda admite 50.000 caracteres; se parte el respaldo en trozos
@@ -83,14 +85,16 @@ function escribirHoja_(nombre, cabecera, filas) {
   h.setFrozenRows(1);
 }
 
-// Lee la pestaña «Importar clientes» (Nombre, Teléfono, Notas) tal como se ve en pantalla.
+// Lee la pestaña «Cargar clientes» (Nombre, Teléfono, Notas) tal como se ve en pantalla.
 // Se leen todas las filas, se descartan las que no tienen nombre y solo entonces se aplica el tope (MAX_CLIENTES).
 function clientesImportar_() {
   const libro = libro_();
-  let h = libro.getSheetByName('Importar clientes');
+  let h = libro.getSheetByName(NOMBRE_CARGAR);
   if (!h) {
-    h = libro.insertSheet('Importar clientes');
+    h = libro.insertSheet(NOMBRE_CARGAR);
     h.getRange(1, 1, 1, HOJA_IMPORTAR.length).setValues([HOJA_IMPORTAR]).setFontWeight('bold');
+    // La nota va en la columna E (la app solo lee de la A a la C), así que nunca se confunde con un cliente.
+    h.getRange(1, 5, NOTA_CARGAR.length, 1).setValues(NOTA_CARGAR.map(function (t) { return [t]; })).setFontColor('#6b6b6b');
     h.setFrozenRows(1);
     return { ok: true, filas: [], truncado: false, max: MAX_CLIENTES, creada: true };
   }

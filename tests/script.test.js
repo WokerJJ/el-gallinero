@@ -33,6 +33,7 @@ class HojaFalsa {
       clearContent() { h.toques.push({ op: 'limpiar', ...rango }); recorrer((r, k) => h.celdas.delete(`${r},${k}`)); return this; },
       setValues(v) { h.toques.push({ op: 'escribir', ...rango }); recorrer((r, k, i, j) => h.celdas.set(`${r},${k}`, v[i][j])); return this; },
       setFontWeight() { h.toques.push({ op: 'formato', ...rango }); return this; },
+      setFontColor() { h.toques.push({ op: 'formato', ...rango }); return this; },
       getValues() { const o = []; recorrer((r, k, i, j) => { (o[i] ||= [])[j] = h.celdas.get(`${r},${k}`) ?? ''; }); return o; },
       getDisplayValues() { return this.getValues().map(fila => fila.map(String)); },
     };
@@ -110,8 +111,8 @@ test('script · un texto que parece fórmula se escribe neutralizado', () => {
   assert.equal(h.celda(3, 1), "'+57");
 });
 
-test('script · «Importar clientes» devuelve solo las filas con nombre, tal como se ven', () => {
-  const h = new HojaFalsa('Importar clientes', { celdas: {
+test('script · «Cargar clientes» devuelve solo las filas con nombre, tal como se ven', () => {
+  const h = new HojaFalsa('Cargar clientes', { celdas: {
     '1,1': 'Nombre', '2,1': 'Ana', '2,2': '300', '2,3': 'Plaza', '3,1': '', '3,2': '999', '4,1': '  ', '5,1': 'Luis',
   } });
   const s = cargarScript({ hojas: [h] });
@@ -125,7 +126,7 @@ test('script · «Importar clientes» devuelve solo las filas con nombre, tal co
 test('script · el tope se aplica después de descartar las filas vacías y avisa si truncó', () => {
   const celdas = { '1,1': 'Nombre' };
   for (let i = 0; i < 20; i++) celdas[`${2 + i * 2},1`] = `Cliente ${i}`; // una fila con nombre y una vacía, alternadas
-  const h = new HojaFalsa('Importar clientes', { filas: 1000, celdas });
+  const h = new HojaFalsa('Cargar clientes', { filas: 1000, celdas });
   const s = cargarScript({ hojas: [h] });
   const max = s.run('MAX_CLIENTES');
   assert.ok(max >= 1000);
@@ -136,14 +137,30 @@ test('script · el tope se aplica después de descartar las filas vacías y avis
   assert.equal(r.max, 5);
 });
 
-test('script · sin la pestaña «Importar clientes» la crea con su cabecera en vez de fallar', () => {
+test('script · sin la pestaña «Cargar clientes» la crea con su cabecera en vez de fallar', () => {
   const s = cargarScript();
   const r = plano(s.run('clientesImportar_')());
   assert.equal(r.ok, true);
   assert.deepEqual(r.filas, []);
-  const h = s.libro.get('Importar clientes');
+  const h = s.libro.get('Cargar clientes');
   assert.ok(h, 'la pestaña se creó');
   assert.deepEqual(plano(h.getRange(1, 1, 1, 3).getValues()), [['Nombre', 'Teléfono', 'Notas / dirección']]);
+});
+
+test('script · la pestaña de entrada nace con una nota de ayuda que no se lee como cliente', () => {
+  const s = cargarScript();
+  s.run('clientesImportar_')();
+  const h = s.libro.get('Cargar clientes');
+  assert.match(String(h.celda(1, 5)), /pegas tú los clientes/i, 'la nota está en la columna E');
+  assert.match(String(h.celda(3, 5)), /Traer clientes del Sheet/);
+  // La nota está fuera de las columnas A–C: una lectura posterior no la toma por un cliente.
+  const r = plano(s.run('clientesImportar_')());
+  assert.deepEqual(r.filas, []);
+});
+test('script · el nombre de la pestaña de entrada es el que usan la plantilla y los avisos', () => {
+  const codigo = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
+  assert.match(codigo, /const NOMBRE_CARGAR = 'Cargar clientes'/);
+  assert.ok(!/Importar clientes/.test(codigo), 'no queda el nombre viejo en el script');
 });
 
 test('script · doPost rechaza una clave incorrecta y la clave por defecto', () => {

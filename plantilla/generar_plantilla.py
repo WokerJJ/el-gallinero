@@ -47,7 +47,7 @@ ANCHOS = {
 
 
 def leer_contrato():
-    """Pestañas y cabeceras tal como las escribe Code.gs: (pestañas espejo, cabecera de «Importar clientes»)."""
+    """Pestañas y cabeceras tal como las escribe Code.gs: (pestañas espejo, cabecera de «Cargar clientes»)."""
     codigo = (RAIZ / "apps-script" / "Code.gs").read_text(encoding="utf-8")
     contrato = []
     for nombre, cab in re.findall(r"escribirHoja_\('([^']+)',\s*\[([^\]]*)\]", codigo):
@@ -127,7 +127,7 @@ def hoja_datos(wb, nombre, cabecera):
 
 
 def hoja_importar_clientes(wb, cab):
-    ws = wb.create_sheet("Importar clientes")
+    ws = wb.create_sheet("Cargar clientes")
     ws.sheet_properties.tabColor = NARANJA
     estilo_cabecera(ws, cab, NARANJA, TINTA)
     for c, ancho in zip("ABC", (32, 20, 38)):  # las tres columnas de HOJA_IMPORTAR
@@ -193,7 +193,7 @@ def hoja_instrucciones(wb, contrato, importar):
         "1. Extensiones → Apps Script: pega el script de la app (en la app: Más → Google Sheets → «Copiar el script») y cambia la clave de la primera línea.",
         "2. Implementar → Nueva implementación → Aplicación web (Ejecutar como: Yo · Acceso: Cualquier persona). Copia la URL que termina en /exec.",
         "3. En la app: Más → Google Sheets: pega la URL y la clave y pulsa Conectar. Desde ahí cada venta, compra y cliente se copia aquí sola.",
-        "4. Para cargar tus clientes: pégalos en la pestaña «Importar clientes» y, en la app, pulsa «Traer clientes del Sheet».",
+        "4. Para cargar tus clientes: pégalos en la pestaña «Cargar clientes» y, en la app, pulsa «Traer clientes del Sheet».",
     ]
     for i, p in enumerate(pasos):
         linea(5 + i, p)
@@ -214,7 +214,7 @@ def hoja_instrucciones(wb, contrato, importar):
         cab.font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
         cab.fill = PatternFill("solid", fgColor=VERDE)
         cab.alignment = Alignment(indent=1)
-    filas = [("Importar clientes", "Tú", "Sí", " · ".join(importar))]
+    filas = [("Cargar clientes", "Tú", "Sí", " · ".join(importar))]
     filas += [(n, "La app", "No", " · ".join(cab)) for n, cab in contrato]
     for i, (a, b, c_, d) in enumerate(filas):
         for col, valor in enumerate((a, b, c_, d), start=1):

@@ -1819,7 +1819,7 @@ async function conectarSheet(url, clave) {
 }
 
 /* ---- Clientes que llegan desde el Sheet ----
-   La pestaña «Importar clientes» es de entrada: el dueño pega ahí sus contactos (por ejemplo, exportados de la agenda
+   La pestaña «Cargar clientes» es de entrada: el dueño pega ahí sus contactos (por ejemplo, exportados de la agenda
    donde WhatsApp los guarda) y la app los trae SIN duplicar: un cliente es el mismo si coincide el teléfono (últimos 10
    dígitos) o, si no hay teléfono, el nombre sin tildes ni mayúsculas. Nunca se borra ni se pisa un dato ya escrito. */
 const sinTildes = t => String(t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -2047,7 +2047,7 @@ const ACCIONES = {
     <li>En la primera línea cambia <strong>CAMBIA-ESTA-CLAVE</strong> por una clave tuya y anótala.</li>
     <li><strong>Implementar → Nueva implementación → Aplicación web</strong>. Ejecutar como <strong>Yo</strong>; acceso: <strong>Cualquier persona</strong>. Autoriza los permisos.</li>
     <li>Copia la URL que termina en <strong>/exec</strong>, pégala aquí con la clave y pulsa Conectar.</li></ol>
-    <p class="muted" style="margin-top:10px">Tip: si usas la plantilla de Excel del proyecto, ya trae las pestañas listas, incluida «Importar clientes» para pegar tus contactos.</p>
+    <p class="muted" style="margin-top:10px">Tip: si usas la plantilla de Excel del proyecto, ya trae las pestañas listas, incluida «Cargar clientes» para pegar tus contactos.</p>
     <p class="muted" style="margin-top:10px">La URL y la clave son como una contraseña: no las compartas.</p>`),
   'lp-copiar': async () => {
     const t = $('#lp-texto'); if (!t) return;
