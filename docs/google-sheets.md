@@ -116,3 +116,13 @@ Si quieres que tu equipo entre con un PIN, el script guarda a los empleados en d
 4. Si alguien olvida su PIN o su cuenta se bloquea (5 fallos seguidos, 15 minutos), cámbiale el PIN desde la misma pantalla.
 
 En la pantalla del teléfono compartido, un empleado no ve ganancias ni deudas a proveedores y no puede anular, cerrar la caja, cambiar precios, borrar ni tocar los respaldos. Esos límites ordenan la pantalla; la barrera real es el script, que a un empleado solo le deja preguntar quién es y salir. **Todavía no puede usar su propio teléfono con los datos del negocio** (la sincronización llega en la entrega 2): hoy el uso real es un teléfono o tableta compartido. **Comparte el Sheet solo contigo**: los empleados no necesitan acceso al archivo.
+
+## Varios teléfonos (por turnos)
+
+Si el dueño y los empleados usan teléfonos distintos, el Sheet es el punto de encuentro:
+
+- **Al abrir la app** (y al volver a ella tras unos minutos) el teléfono mira si alguien guardó en el Sheet; si aquí no hay cambios sin enviar, **carga los datos solo**.
+- **Cada cambio se envía** a los pocos segundos, y **al cerrar la caja el envío es obligatorio**: si no llega, la app te lo dice con claridad y lo reintenta sola.
+- **Nunca se pisa en silencio.** Cada envío lleva la versión del Sheet que el teléfono cargó; si otro guardó después, el envío se rechaza y la app pregunta qué datos conservar (*los del Sheet*, *los de este teléfono* o *decidir después*). Lo que no elijas no se borra del todo: el teléfono guarda una copia y el Sheet, la generación anterior.
+- Para que esto funcione hay que **actualizar `Code.gs` y publicar una nueva versión** de la misma implementación. Con un script anterior la app sigue funcionando como siempre, sin esta protección.
+- **Ojo:** el teléfono de cada empleado guarda todos los datos del negocio (también costos y ganancias, aunque su pantalla no los muestre). Dáselo solo a gente de confianza.
