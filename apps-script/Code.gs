@@ -163,15 +163,15 @@ function guardar_(d) {
   escribirHoja_('Inventario', ['Producto', 'Unidad', 'Existencias', 'Costo promedio', 'Precio de venta', 'Control de frescura'],
     d.products.map(function (p) { return [p.name, p.unit, p.stock, p.cost, p.price || '', p.control || '']; }));
 
-  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe', 'Comprobante', 'Costo unitario'],
+  escribirHoja_('Ventas', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Precio', 'Total', 'Cliente', 'Pago', 'Abonado', 'Debe', 'Comprobante', 'Costo unitario', 'Medio de cobro'],
     d.ventas.slice().sort(porFechaDesc).map(function (v) {
       const debe = v.tipoPago === 'credito' ? Math.max(0, v.total - (v.pagado || 0)) : 0;
-      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe, numeroComprobante(v.numero), v.costoUnitario || 0];
+      return [v.fecha, nombreProd(v.productoId), v.cantidad, v.panales || '', v.precio, v.total, v.clienteId && cli[v.clienteId] ? cli[v.clienteId].nombre : '', v.tipoPago === 'credito' ? 'Crédito' : 'Contado', v.pagado || 0, debe, numeroComprobante(v.numero), v.costoUnitario || 0, v.medio === 'efectivo' ? 'Efectivo' : (v.medio === 'transferencia' ? 'Transferencia' : '')];
     }));
 
-  escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas', 'Proveedor', 'Pagado', 'Debe', 'Comprobante'],
+  escribirHoja_('Compras', ['Fecha', 'Producto', 'Cantidad', 'Panales', 'Costo unitario', 'Total', 'Vence', 'Días en granja', 'Notas', 'Proveedor', 'Pagado', 'Debe', 'Comprobante', 'Recibió', 'Documento proveedor'],
     d.entradas.slice().sort(porFechaDesc).map(function (e) {
-      return [e.fecha, nombreProd(e.productoId), e.cantidad, e.panales || '', e.costoUnitario, e.total, e.vence || '', e.diasGranja || '', e.notas || '', e.proveedorId && prv[e.proveedorId] ? prv[e.proveedorId].nombre : '', e.pagado == null ? e.total : e.pagado, debeCompra(e), numeroComprobanteCompra(e.numero)];
+      return [e.fecha, nombreProd(e.productoId), e.cantidad, e.panales || '', e.costoUnitario, e.total, e.vence || '', e.diasGranja || '', e.notas || '', e.proveedorId && prv[e.proveedorId] ? prv[e.proveedorId].nombre : '', e.pagado == null ? e.total : e.pagado, debeCompra(e), numeroComprobanteCompra(e.numero), e.recibidoPor || '', e.documentoProveedor || ''];
     }));
 
   escribirHoja_('Proveedores', ['Proveedor', 'Teléfono', 'Deuda', 'Notas', 'Saldo a favor'],
@@ -191,6 +191,17 @@ function guardar_(d) {
   escribirHoja_('Pérdidas', ['Fecha', 'Producto', 'Cantidad', 'Costo unitario', 'Motivo'],
     (d.ajustes || []).slice().sort(porFechaDesc).map(function (a) {
       return [a.fecha, nombreProd(a.productoId), a.cantidad, a.costoUnitario || 0, a.motivo || ''];
+    }));
+
+  // Caja: libro de movimientos del efectivo (el más reciente primero) y cierres del día.
+  const origenCaja = { apertura: 'Saldo inicial', venta: 'Venta', abono: 'Abono de cliente', compra: 'Compra', pago: 'Pago a proveedor', manual: 'Manual', anulacion: 'Anulación', ajuste: 'Ajuste de cierre' };
+  escribirHoja_('Caja', ['Fecha', 'Concepto', 'Ingreso', 'Egreso', 'Origen', 'Registró'],
+    (d.movimientos || []).slice().sort(function (a, b) { return b.id - a.id; }).map(function (m) {
+      return [m.fecha, m.concepto || '', m.tipo === 'ingreso' ? m.monto : '', m.tipo === 'egreso' ? m.monto : '', origenCaja[m.origen] || m.origen || '', m.por || ''];
+    }));
+  escribirHoja_('Cierres', ['Fecha', 'Esperado', 'Contado', 'Diferencia', 'Nota', 'Registró'],
+    (d.cierres || []).slice().sort(function (a, b) { return b.id - a.id; }).map(function (c) {
+      return [c.fecha, c.esperado, c.contado, c.diferencia, c.nota || '', c.por || ''];
     }));
 
   return { ok: true, actualizado: ahora, ventas: d.ventas.length, clientes: d.clientes.length };

@@ -9,7 +9,8 @@
  *
  * Contrato con Code.gs (las columnas se leen por letra; el script de la app solo agrega columnas al final):
  *   Ventas:      A Fecha · B Producto · C Cantidad · D Panales · E Precio · F Total · G Cliente · H Pago · I Abonado ·
- *                J Debe · K Comprobante · L Costo unitario (costo por unidad EN EL MOMENTO de la venta)
+ *                J Debe · K Comprobante · L Costo unitario (costo por unidad EN EL MOMENTO de la venta) ·
+ *                M Medio de cobro (Efectivo / Transferencia)
  *   Compras:     A Fecha · B Producto · C Cantidad · D Panales · E Costo unitario · F Total · G Vence · H Días en granja ·
  *                I Notas · J Proveedor · K Pagado · L Debe · M Comprobante
  *   Proveedores: A Proveedor · B Teléfono · C Deuda · D Notas · E Saldo a favor
@@ -281,8 +282,9 @@ function buildMotor_() {
   sh.getRange('D17:E17').setValues([['Método', 'Total']]);
   const pago = re => `=SUMPRODUCT(ARRAYFORMULA(--REGEXMATCH(LOWER(Ventas!H2:H&""),"${re}")),Ventas!F2:F)`;
   sh.getRange('D18:D20').setValues([['Efectivo / contado'], ['Transferencia'], ['Crédito']]);
-  sh.getRange('E18').setFormula(pago('efect|contado'));
-  sh.getRange('E19').setFormula(pago('transf|nequi|davi|banc'));
+  // Contado en efectivo y contado por transferencia se separan con la columna «Medio de cobro» (Ventas!M).
+  sh.getRange('E18').setFormula('=SUMPRODUCT((Ventas!H2:H="Contado")*(LOWER(Ventas!M2:M&"")<>"transferencia"),Ventas!F2:F)');
+  sh.getRange('E19').setFormula('=SUMPRODUCT((Ventas!H2:H="Contado")*(LOWER(Ventas!M2:M&"")="transferencia"),Ventas!F2:F)');
   sh.getRange('E20').setFormula(pago('cr[eé]d|fiad'));
   sh.getRange('E18:E20').setNumberFormat(MONEY);
 
