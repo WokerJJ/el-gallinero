@@ -9,6 +9,7 @@ Aplicación web instalable (PWA) para llevar el control de una distribuidora de 
 - **Comprar:** entradas de mercancía con costo promedio ponderado. El formulario se adapta al producto: huevos piden *días en la granja*, productos empacados piden *fecha de vencimiento*.
 - **Caja:** libro del efectivo del negocio. Las ventas y abonos cobrados en efectivo entran solos; las compras y pagos a las fincas pueden salir de la caja; hay gastos e ingresos manuales y cierre del día contando el dinero (con sobrante o faltante). Las ventas se cobran en efectivo o por transferencia.
 - **Recepción de mercancía:** cada compra guarda quién la recibió y el número de remisión o factura del proveedor.
+- **Empleados (opcional):** el dueño crea empleados con usuario y PIN desde Más → Empleados; en un teléfono compartido cada uno entra con su PIN, solo ve y hace lo suyo (vender, recibir mercancía, cobrar, pagar desde la caja) y lo que registra queda con su nombre. Ver `docs/adr/0002-empleados-login-y-sincronizacion-central.md`.
 - **Clientes:** deuda por pedido, abonos (también a la deuda más vieja primero) y cobro por WhatsApp.
 - **Productos:** existencias, precio fijo, pérdidas y una *lista de precios* lista para enviar por WhatsApp.
 - **Facturas:** reportes por día, semana, mes o año; imprimir o exportar a Excel (CSV).

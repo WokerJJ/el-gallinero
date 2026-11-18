@@ -106,3 +106,13 @@ Cosas a saber:
 - **Al actualizar el script de la app** (`Code.gs`): pega el contenido nuevo **conservando tu clave**, publica una **nueva versión** (Implementar → Administrar implementaciones → Editar → Nueva versión) y reconstruye los paneles. Si cambia la URL de la aplicación web, en el teléfono ve a **Más → Google Sheets → Desconectar** y conéctalo de nuevo con la URL nueva.
 - **No compartas la URL ni la clave** (por ejemplo en un chat): juntas permiten leer y escribir todos los datos. Si se filtran, cambia la clave en `Code.gs` y publica una versión nueva.
 
+## Empleados (opcional)
+
+Si quieres que tu equipo entre con un PIN, el script guarda a los empleados en dos pestañas **ocultas**: `_empleados` (usuario, nombre, PIN con sal y hash, intentos, bloqueo) y `_sesiones` (tokens, solo como hash). No las edites a mano: se administran desde la app en **Más → Empleados**.
+
+1. Actualiza `Code.gs` (conservando tu `CLAVE`) y publica una **nueva versión** de la misma implementación.
+2. En la app: **Más → Empleados → + Nuevo empleado** (nombre, usuario y un PIN de 4 a 6 números, sin repetir el mismo ni escalera como 1234).
+3. Activa **Pedir inicio de sesión** en el teléfono que compartirán. El empleado entra con su usuario y su PIN; tú entras con tu clave.
+4. Si alguien olvida su PIN o su cuenta se bloquea (5 fallos seguidos, 15 minutos), cámbiale el PIN desde la misma pantalla.
+
+Un empleado no ve ganancias ni deudas a proveedores y no puede anular, cerrar la caja, cambiar precios, borrar ni tocar los respaldos. **Comparte el Sheet solo contigo**: los empleados no necesitan acceso al archivo.
