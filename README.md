@@ -7,6 +7,8 @@ Aplicación web instalable (PWA) para llevar el control de una distribuidora de 
 - **Inicio:** ventas y ganancia del día, cuánto le deben, alertas de productos por vencer y existencias.
 - **Vender:** ventas de contado o a crédito, con precio sugerido según el margen y abono inicial.
 - **Comprar:** entradas de mercancía con costo promedio ponderado. El formulario se adapta al producto: huevos piden *días en la granja*, productos empacados piden *fecha de vencimiento*.
+- **Caja:** libro del efectivo del negocio. Las ventas y abonos cobrados en efectivo entran solos; las compras y pagos a las fincas pueden salir de la caja; hay gastos e ingresos manuales y cierre del día contando el dinero (con sobrante o faltante). Las ventas se cobran en efectivo o por transferencia.
+- **Recepción de mercancía:** cada compra guarda quién la recibió y el número de remisión o factura del proveedor.
 - **Clientes:** deuda por pedido, abonos (también a la deuda más vieja primero) y cobro por WhatsApp.
 - **Productos:** existencias, precio fijo, pérdidas y una *lista de precios* lista para enviar por WhatsApp.
 - **Facturas:** reportes por día, semana, mes o año; imprimir o exportar a Excel (CSV).

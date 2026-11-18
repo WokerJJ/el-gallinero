@@ -272,3 +272,54 @@ test('script · Proveedores incluye el saldo a favor', () => {
   const sin = guardarS().hoja('Proveedores');
   assert.equal(sin.celda(2, 5), 0, 'un proveedor sin saldo a favor deja 0');
 });
+
+/* ---------- caja, medio de cobro y recepción de mercancía ---------- */
+test('script · Caja escribe cada movimiento como Ingreso o Egreso (nunca los dos), el más reciente primero', () => {
+  const { hoja } = guardarS(datosS({ movimientos: [
+    { id: 10, fecha: '2026-11-17', tipo: 'ingreso', monto: 100000, concepto: 'Saldo inicial de la caja', origen: 'apertura', por: 'Dueño' },
+    { id: 11, fecha: '2026-11-17', tipo: 'egreso', monto: 40000, concepto: 'Compra · 4 panales', origen: 'compra', por: 'Luis' },
+  ] }));
+  const c = hoja('Caja');
+  assert.deepEqual(plano(c.getRange(1, 1, 1, 6).getValues())[0], ['Fecha', 'Concepto', 'Ingreso', 'Egreso', 'Origen', 'Registró']);
+  assert.equal(c.celda(2, 2), 'Compra · 4 panales');
+  assert.equal(c.celda(2, 3), '', 'un egreso no lleva ingreso');
+  assert.equal(c.celda(2, 4), 40000);
+  assert.equal(c.celda(2, 5), 'Compra');
+  assert.equal(c.celda(2, 6), 'Luis');
+  assert.equal(c.celda(3, 3), 100000);
+  assert.equal(c.celda(3, 4), '');
+  assert.equal(c.celda(3, 5), 'Saldo inicial');
+});
+test('script · Cierres escribe lo esperado, lo contado y la diferencia', () => {
+  const { hoja } = guardarS(datosS({ cierres: [{ id: 5, fecha: '2026-11-17', esperado: 100000, contado: 98000, diferencia: -2000, nota: 'Faltó cambio', por: 'Dueño' }] }));
+  const c = hoja('Cierres');
+  assert.equal(c.celda(2, 2), 100000);
+  assert.equal(c.celda(2, 3), 98000);
+  assert.equal(c.celda(2, 4), -2000);
+  assert.equal(c.celda(2, 5), 'Faltó cambio');
+});
+test('script · sin caja las pestañas Caja y Cierres quedan solo con su cabecera', () => {
+  const { hoja } = guardarS();
+  assert.equal(hoja('Caja').celda(2, 1), undefined);
+  assert.equal(hoja('Cierres').celda(1, 1), 'Fecha');
+});
+test('script · Ventas dice si lo cobrado fue en efectivo o por transferencia', () => {
+  const { hoja } = guardarS(datosS({ ventas: [
+    { id: 1, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-12', clienteId: null, tipoPago: 'contado', pagado: 6000, medio: 'efectivo' },
+    { id: 2, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-11', clienteId: null, tipoPago: 'contado', pagado: 6000, medio: 'transferencia' },
+    { id: 3, productoId: 'campo', cantidad: 10, precio: 600, total: 6000, fecha: '2026-11-10', clienteId: 'c1', tipoPago: 'credito', pagado: 0 },
+  ] }));
+  const v = hoja('Ventas');
+  assert.equal(v.celda(1, 13), 'Medio de cobro');
+  assert.equal(v.celda(2, 13), 'Efectivo');
+  assert.equal(v.celda(3, 13), 'Transferencia');
+  assert.equal(v.celda(4, 13), '', 'a crédito sin abono no hay medio');
+});
+test('script · Compras lleva quién recibió y el documento del proveedor', () => {
+  const { hoja } = guardarS(datosS({ entradas: [{ id: 3, productoId: 'campo', cantidad: 300, costoUnitario: 400, total: 1000, fecha: '2026-11-05', proveedorId: 'f1', recibidoPor: 'Luis Pérez', documentoProveedor: 'F-1234' }] }));
+  const c = hoja('Compras');
+  assert.equal(c.celda(1, 14), 'Recibió');
+  assert.equal(c.celda(1, 15), 'Documento proveedor');
+  assert.equal(c.celda(2, 14), 'Luis Pérez');
+  assert.equal(c.celda(2, 15), 'F-1234');
+});

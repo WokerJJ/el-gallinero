@@ -93,9 +93,9 @@ async function responder(a, ok = true) {
 }
 
 const prod = (o = {}) => ({ id: 'campo', name: 'Huevo de Campo', unit: 'unidades', cost: 0, price: 0, stock: 0, lastCost: 0, control: 'granja', ...o });
-const sembrar = ({ products = [prod()], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], config = {} } = {}) => (proveedores.length
-  // con proveedores se siembra el guardado único actual (eg_db); sin ellos, las claves por colección de la versión anterior
-  ? { eg_db: { products, entradas, ventas, clientes, ajustes, proveedores, config } }
+const sembrar = ({ products = [prod()], entradas = [], ventas = [], clientes = [], ajustes = [], proveedores = [], movimientos = [], cierres = [], config = {} } = {}) => (proveedores.length || movimientos.length || cierres.length
+  // con proveedores o caja se siembra el guardado único actual (eg_db); sin ellos, las claves por colección de la versión anterior
+  ? { eg_db: { products, entradas, ventas, clientes, ajustes, proveedores, movimientos, cierres, config } }
   : { eg_products: products, eg_entradas: entradas, eg_ventas: ventas, eg_clientes: clientes, eg_ajustes: ajustes, eg_config: config });
 
 /* Llena el formulario de venta y lo envía. */
