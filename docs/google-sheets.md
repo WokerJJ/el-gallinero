@@ -131,10 +131,10 @@ Si el dueño y los empleados usan teléfonos distintos, el Sheet es el punto de 
 
 El reloj de horas guarda los turnos en dos pestañas **ocultas** del Sheet, `_fichajes` (un turno por fila) y `_fichajes_log` (cada corrección, con lo que había antes y el motivo). No las edites a mano: se ven y se corrigen desde la app, en **Más → Horas del equipo**. Los turnos **no dependen del respaldo**: el envío del estado completo nunca los pisa.
 
-1. Actualiza `Code.gs` (conservando tu `CLAVE`) y publica una **nueva versión** de la misma implementación.
+1. Actualiza `Code.gs` (conservando tu `CLAVE`) y publica una **nueva versión** de la misma implementación. **Activa la Caja** (Más → Caja): sin ella no hay cierre y cada turno se cierra solo a las 16 h, con horas infladas que tendrás que corregir.
 2. El empleado entra con su PIN y, en su Inicio, pulsa **Entrar a trabajar**. La hora la pone el script, así que hace falta internet.
-3. **La salida la marca el cierre de caja:** al cerrar, la app te dice a quién se le marca la salida y la marca. Si en ese momento no hay internet, queda anotada y se marca al volver la conexión, con la hora del cierre.
+3. **La salida la marca el cierre de caja:** al cerrar, la app te dice a quién se le marca la salida y la marca. Si en ese momento no hay internet, cada cierre queda anotado en la app y se marca al volver la conexión, en orden y con la hora de su cierre (la app manda cuánto tiempo pasó desde el cierre, no la hora del teléfono). Si desconectas el Sheet con cierres sin marcar, la app te avisa de que se pierden.
 4. No se descuentan descansos. Un turno abierto más de 16 horas (olvidaste cerrar la caja) se cierra solo y aparece marcado para revisar.
 5. Para un turno que se olvidó fichar, o una hora mal marcada, usa **Agregar un turno olvidado** o **Corregir**: siempre piden un motivo y queda el rastro.
 
-Si un empleado se va antes del cierre, sus horas se cuentan hasta el cierre: corrige su salida con motivo. Esto no calcula recargos, horas extra ni nómina.
+Si un empleado se va antes del cierre, sus horas se cuentan hasta el cierre: corrige su salida con motivo. En **Corregir**, un turno en curso admite una salida opcional (para quien se fue y no vas a cerrar la caja todavía). Esto no calcula recargos, horas extra ni nómina.
