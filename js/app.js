@@ -346,7 +346,7 @@ const ICONOS = {
 const icono = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS[n]}</svg>`;
 
 const NAV = [['inicio', 'Inicio'], ['vender', 'Vender'], ['comprar', 'Comprar'], ['clientes', 'Clientes'], ['mas', 'Más']];
-const SUBVISTAS = ['caja', 'productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes', 'empleados'];
+const SUBVISTAS = ['caja', 'productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes', 'empleados', 'horas'];
 
 function aviso(msg, error = false) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -478,6 +478,7 @@ VISTAS.inicio = () => {
       <button class="btn" data-act="ir" data-v="vender">${icono('vender')}Vender</button>
       <button class="btn btn-sun" data-act="ir" data-v="comprar">${icono('comprar')}Llegó mercancía</button>
     </div>
+    ${empleadoActual() ? `<section class="card" id="mi-turno"><h3>Mi turno</h3>${htmlMiTurno()}</section>` : ''}
     ${dueno ? recordatorio : ''}
     <section class="card"><h3>Hoy</h3>
       <div class="stats">
@@ -1314,9 +1315,9 @@ const usuarioActual = () => { const e = empleadoActual(); return e ? e.nombre : 
 const registroPor = () => (acceso.exigir ? { por: usuarioActual() } : {});
 
 // Cada acción de la app está en una de las dos listas (una prueba lo exige): lo que cualquiera puede hacer y lo que solo es del dueño.
-const ACCIONES_LIBRES = new Set(['ir', 'cerrar', 'paso', 'comprobante', 'comprobante-compra', 'imprimir-doc', 'caja-gasto', 'caja-ingreso', 'caja-dia', 'cliente-nuevo', 'cliente-ver', 'cliente-wa', 'abonar', 'pagar', 'pagar-proveedor', 'pagar-compra-completa', 'lista-precios', 'lp-copiar', 'lp-wa', 'imprimir', 'entrada-modo', 'sesion-salir']);
-const ACCIONES_DUENO = new Set(['graf-tipo', 'caja-cierre', 'caja-anular', 'proveedor-nuevo', 'proveedor-ver', 'proveedor-editar', 'cliente-editar', 'venta-anular', 'entrada-anular', 'ajuste-anular', 'prod-nuevo', 'prod-editar', 'perdida', 'periodo', 'ref', 'csv', 'json-export', 'json-import', 'borrar-todo', 'sheets-enviar', 'sheets-restaurar', 'sheets-clientes', 'sheets-desconectar', 'sheets-script', 'sheets-ayuda', 'emp-nuevo', 'emp-pin', 'emp-activo', 'emp-exigir', 'emp-recargar']);
-const VISTAS_DUENO = new Set(['productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes', 'empleados']);
+const ACCIONES_LIBRES = new Set(['ir', 'cerrar', 'paso', 'comprobante', 'comprobante-compra', 'imprimir-doc', 'caja-gasto', 'caja-ingreso', 'caja-dia', 'cliente-nuevo', 'cliente-ver', 'cliente-wa', 'abonar', 'pagar', 'pagar-proveedor', 'pagar-compra-completa', 'lista-precios', 'lp-copiar', 'lp-wa', 'imprimir', 'entrada-modo', 'sesion-salir', 'turno-entrar', 'turno-recargar']);
+const ACCIONES_DUENO = new Set(['graf-tipo', 'caja-cierre', 'caja-anular', 'proveedor-nuevo', 'proveedor-ver', 'proveedor-editar', 'cliente-editar', 'venta-anular', 'entrada-anular', 'ajuste-anular', 'prod-nuevo', 'prod-editar', 'perdida', 'periodo', 'ref', 'csv', 'json-export', 'json-import', 'borrar-todo', 'sheets-enviar', 'sheets-restaurar', 'sheets-clientes', 'sheets-desconectar', 'sheets-script', 'sheets-ayuda', 'emp-nuevo', 'emp-pin', 'emp-activo', 'emp-exigir', 'emp-recargar', 'horas-rango', 'horas-recargar', 'horas-corregir', 'horas-agregar']);
+const VISTAS_DUENO = new Set(['productos', 'proveedores', 'graficos', 'reportes', 'respaldo', 'sheets', 'ajustes', 'empleados', 'horas']);
 // Quita de la pantalla lo que el empleado no puede usar (botones de anular, enlaces a vistas del dueño…).
 function ocultarSoloDueno() {
   if (esDueno()) return;
@@ -1476,6 +1477,144 @@ function formEmpleado(id) {
   });
 }
 
+/* =============== Horas del equipo (ADR 0005) =============== */
+/* El empleado ficha su ENTRADA (la hora la pone el script, por eso hace falta conexión). La SALIDA la marca el cierre de caja del
+   dueño. Sin descansos: las horas son salida − entrada, en minutos exactos y en hora de Colombia. Los turnos viven en el script. */
+const ZONA_CO = 'America/Bogota', UTC_CO_MS = 5 * 3600000;
+const fmtHM = min => { min = Math.max(0, Math.round(Number(min) || 0)); const h = Math.floor(min / 60), m = min % 60; return h ? `${h} h ${m} min` : `${m} min`; };
+const horaCo = iso => new Date(iso).toLocaleTimeString('es-CO', { timeZone: ZONA_CO, hour: 'numeric', minute: '2-digit' });
+const diaCo = iso => new Date(iso).toLocaleDateString('es-CO', { timeZone: ZONA_CO, weekday: 'short', day: 'numeric', month: 'short' });
+const fechaCo = ms => new Date(ms - UTC_CO_MS).toISOString().slice(0, 10);
+const paraInputCo = iso => new Date(Date.parse(iso) - UTC_CO_MS).toISOString().slice(0, 16); // valor de un campo de fecha y hora, en hora de Colombia
+const desdeInputCo = v => (v ? Date.parse(v + ':00-05:00') : NaN);
+
+// El empleado habla con el script con SU token (nunca con la clave del dueño, aunque el teléfono la tenga guardada).
+function llamarEmpleado(cuerpo, ms) {
+  const e = empleadoActual(), url = (sync && sync.url) || acceso.url;
+  if (!e || !url) return Promise.reject(new Error('Entra con tu usuario y PIN'));
+  return postScript(url, { token: e.token, ...cuerpo }, ms);
+}
+let miTurno = null, miTurnoError = '', miTurnoDesfase = 0; // desfase: hora del servidor − hora de este teléfono, para mostrar el contador
+function htmlMiTurno() {
+  if (miTurnoError) return `<p class="muted lead">${esc(miTurnoError)}</p><button class="btn btn-sm btn-ghost" data-act="turno-recargar">Reintentar</button>`;
+  if (!miTurno) return '<p class="muted">Cargando tu turno…</p>';
+  const t = miTurno.turno;
+  const min = t ? Math.max(0, Math.floor((Date.now() + miTurnoDesfase - Date.parse(t.entrada)) / 60000)) : 0;
+  const hoy = `<p class="muted">Hoy: ${fmtHM(miTurno.hoyMin)} · Esta semana: ${fmtHM(miTurno.semanaMin)}</p>`;
+  return t
+    ? `<div class="stat teal"><div class="n">${fmtHM(min)}</div><div class="l">Trabajando desde las ${esc(horaCo(t.entrada))}</div></div><p class="muted lead">Tu salida se marca cuando el dueño cierra la caja.</p>${hoy}`
+    : `<button class="btn btn-teal" data-act="turno-entrar">Entrar a trabajar</button>${hoy}`;
+}
+const pintarMiTurno = () => { const el = $('#mi-turno'); if (el) el.innerHTML = `<h3>Mi turno</h3>${htmlMiTurno()}`; };
+async function cargarMiTurno() {
+  if (!empleadoActual()) return;
+  try { const j = await llamarEmpleado({ accion: 'miTurno' }); miTurno = j; miTurnoDesfase = Date.parse(j.ahora) - Date.now(); miTurnoError = ''; } catch (e) {
+    miTurnoError = /acci[oó]n desconocida/i.test(String((e && e.message) || e)) ? 'El script de Google Sheets es anterior al reloj de horas: pídele al dueño que lo actualice.' : 'No se pudo leer tu turno: ' + mensajeSync(e);
+  }
+  if (vistaActual === 'inicio') pintarMiTurno();
+}
+MONTAR.inicio = () => { if (empleadoActual() && sync && sync.listo) cargarMiTurno(); };
+async function ficharEntrada() {
+  if (!empleadoActual()) return aviso('Entra con tu usuario y PIN para fichar', true);
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return aviso('Necesitas internet para fichar: la hora la pone el servidor', true);
+  try {
+    const j = await llamarEmpleado({ accion: 'fichar' });
+    miTurnoDesfase = Date.parse(j.ahora) - Date.now(); miTurno = { ...(miTurno || { hoyMin: 0, semanaMin: 0 }), turno: j.turno, ahora: j.ahora };
+    aviso(j.yaAbierto ? 'Ya tenías un turno abierto' : 'Turno iniciado');
+  } catch (e) { return aviso('No se pudo fichar: ' + mensajeSync(e), true); }
+  pintarMiTurno(); cargarMiTurno();
+}
+
+/* Pantalla del dueño */
+let horasRango = 'semana', horasDatos = null, horasCargando = false, horasError = '';
+function rangoHoras(k) {
+  const hoy = fechaCo(Date.now());
+  if (k === 'hoy') return { desde: hoy, hasta: hoy };
+  if (k === 'mes') return { desde: hoy.slice(0, 8) + '01', hasta: hoy };
+  const d = new Date(hoy + 'T00:00:00Z'); // la semana empieza el lunes
+  return { desde: new Date(d.getTime() - ((d.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10), hasta: hoy };
+}
+async function cargarHoras() {
+  horasCargando = true; horasError = '';
+  try { horasDatos = await llamarSheet({ accion: 'turnosListar', ...rangoHoras(horasRango) }); } catch (e) {
+    horasError = /acci[oó]n desconocida/i.test(String((e && e.message) || e)) ? 'Tu script es de una versión anterior al reloj de horas: actualízalo (Implementar → Administrar implementaciones → Editar → Nueva versión)' : 'No se pudieron leer las horas: ' + mensajeSync(e);
+    horasDatos = { turnos: [], totales: [] };
+  } finally { horasCargando = false; }
+  if (vistaActual === 'horas') repintar();
+}
+const etiquetaTurno = t => (t.abierto ? '<span class="badge ok">En curso</span>' : t.cierre === 'tope' ? '<span class="badge out">Revisar: tope de 16 h</span>' : t.cierre === 'corregido' ? '<span class="badge low">Corregido</span>' : t.cierre === 'manual' ? '<span class="badge low">Agregado</span>' : '');
+VISTAS.horas = () => {
+  const d = horasDatos;
+  const tabs = [['hoy', 'Hoy'], ['semana', 'Esta semana'], ['mes', 'Este mes']].map(([k, t]) => `<button class="btn btn-sm ${k === horasRango ? '' : 'btn-ghost'}" data-act="horas-rango" data-k="${k}" aria-pressed="${k === horasRango}">${t}</button>`).join(' ');
+  const totales = horasError ? `<div class="alert danger">${esc(horasError)}</div>` : !d ? '<p class="muted">Cargando…</p>'
+    : !d.totales.length ? '<p class="empty">Nadie fichó en este rango.</p>'
+    : `<div class="list">${d.totales.map(t => `<div class="row"><div class="main"><div class="t">${esc(t.nombre)}</div></div><div class="r"><strong>${fmtHM(t.minutos)}</strong></div></div>`).join('')}</div>`;
+  const turnos = d && d.turnos.length
+    ? `<div class="list">${d.turnos.map(t => `<div class="row"><div class="main"><div class="t">${esc(t.nombre)} ${etiquetaTurno(t)}</div><div class="s">${esc(diaCo(t.entrada))} · ${esc(horaCo(t.entrada))} – ${t.abierto ? 'sigue trabajando' : esc(horaCo(t.salida))}</div></div>
+        <div class="r"><strong>${fmtHM(t.minutos)}</strong> <button class="btn btn-sm btn-ghost" data-act="horas-corregir" data-id="${esc(t.id)}">Corregir</button></div></div>`).join('')}</div>` : '<p class="empty">Sin turnos en este rango.</p>';
+  return `
+    ${cabecera('Horas del equipo', 'mas')}
+    ${!(sync && sync.listo) ? '<div class="card"><p class="muted">Las horas viven en tu Google Sheet. Conéctalo primero en Más → Google Sheets.</p></div>' : `
+    <div class="card"><h3>Horas por persona</h3><div class="btn-row">${tabs}</div>${totales}</div>
+    <div class="card"><h3>Turnos</h3>${turnos}
+      <div class="btn-row"><button class="btn btn-ghost" data-act="horas-agregar">+ Agregar un turno olvidado</button><button class="btn btn-ghost" data-act="horas-recargar">Actualizar</button></div></div>`}
+    <div class="card"><h3>Cómo se cuentan</h3>
+      <p class="muted">El empleado ficha su entrada desde su teléfono (la hora la pone el servidor). <strong>La salida se marca cuando tú cierras la caja.</strong> No se descuentan descansos y las horas son en minutos exactos, en hora de Colombia. Un turno que queda abierto más de 16 horas se cierra solo y aparece para revisar. Cada corrección queda con su motivo.</p></div>`;
+};
+MONTAR.horas = () => { if (sync && sync.listo && horasDatos === null && !horasCargando) cargarHoras(); };
+
+function formHoras(id, empleados) {
+  const nuevo = !id, t = nuevo ? null : ((horasDatos && horasDatos.turnos) || []).find(x => x.id === id);
+  if (!nuevo && !t) return;
+  const campo = (i, et, v, extra = '') => `<label class="field"><span>${et}</span><input id="${i}" type="datetime-local" value="${esc(v)}" ${extra}></label>`;
+  hoja(nuevo ? 'Agregar un turno olvidado' : `Corregir el turno de ${t.nombre}`, `<form id="f-horas" novalidate>
+    ${nuevo ? `<label class="field"><span>Empleado</span><select id="hc-emp">${(empleados || []).map(e => `<option value="${esc(e.id)}">${esc(e.nombre)}</option>`).join('')}</select></label>` : ''}
+    ${campo('hc-entrada', 'Entrada', nuevo ? '' : paraInputCo(t.entrada))}
+    ${nuevo || !t.abierto ? campo('hc-salida', 'Salida', nuevo || !t.salida ? '' : paraInputCo(t.salida)) : '<p class="muted lead">Turno en curso: la salida se marca al cerrar la caja. Aquí solo puedes corregir la entrada.</p>'}
+    <label class="field"><span>Motivo del cambio</span><input id="hc-motivo" type="text" maxlength="200" autocomplete="off" placeholder="Por ejemplo: olvidó fichar"><div class="hint">Queda guardado junto con lo que había antes.</div></label>
+    <button class="btn btn-teal" type="submit">${nuevo ? 'Agregar turno' : 'Guardar corrección'}</button></form>`, b => {
+    $('#f-horas', b).addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const entrada = desdeInputCo($('#hc-entrada', b).value), sv = $('#hc-salida', b) ? $('#hc-salida', b).value : '', salida = desdeInputCo(sv), motivo = $('#hc-motivo', b).value.trim();
+      if (!Number.isFinite(entrada) || (nuevo || sv) && !Number.isFinite(salida)) return aviso('Escribe la fecha y la hora de entrada' + (nuevo ? ' y de salida' : ''), true);
+      if (motivo.length < 3) return aviso('Escribe el motivo del cambio', true);
+      const cuerpo = nuevo
+        ? { accion: 'fichajeAgregar', empleadoId: $('#hc-emp', b).value, entrada: new Date(entrada).toISOString(), salida: new Date(salida).toISOString(), motivo }
+        : { accion: 'fichajeCorregir', id, entrada: new Date(entrada).toISOString(), ...(sv ? { salida: new Date(salida).toISOString() } : {}), motivo };
+      try { await llamarSheet(cuerpo); } catch (e) { return aviso(mensajeSync(e), true); }
+      cerrarHoja(); horasDatos = null; aviso(nuevo ? 'Turno agregado' : 'Turno corregido');
+      if (vistaActual === 'horas') repintar();
+    });
+  });
+}
+async function abrirAgregarTurno() {
+  let lista = empleadosLista;
+  if (lista === null) { try { lista = (await llamarSheet({ accion: 'empleadoListar' })).empleados || []; } catch (e) { return aviso('No se pudo leer el equipo: ' + mensajeSync(e), true); } }
+  if (!lista.length) return aviso('Primero crea un empleado en Más → Empleados', true);
+  formHoras(null, lista);
+}
+
+/* Cierre de caja: avisa a quién se le marca la salida y la marca. Si no hay conexión queda anotada y se reintenta sola. */
+async function turnosAbiertosParaCierre() {
+  if (!sync || !sync.listo || !sync.clave || !esDueno()) return [];
+  try { return (await llamarSheet({ accion: 'turnosAbiertos' }, 8000)).abiertos || []; } catch { return []; } // script anterior o sin red: el cierre sigue igual
+}
+async function reintentarSalidas() {
+  if (!sync || !sync.turnosPorCerrar || !sync.clave) return;
+  try {
+    const j = await llamarSheet({ accion: 'turnosCerrar', cierreEn: sync.turnosPorCerrar }, 15000);
+    sync.turnosPorCerrar = ''; guardarSync();
+    if (j.cerrados && j.cerrados.length) aviso('Salida marcada: ' + j.cerrados.map(c => c.nombre).join(', '));
+  } catch (e) {
+    if (/acci[oó]n desconocida/i.test(String((e && e.message) || e))) { sync.turnosPorCerrar = ''; guardarSync(); } // script anterior al reloj: no hay nada que marcar
+  }
+}
+async function marcarSalidas(cierreEn) {
+  if (!sync || !sync.listo || !sync.clave) return;
+  if (!sync.turnosPorCerrar) { sync.turnosPorCerrar = cierreEn; guardarSync(); } // se anota primero: si la llamada falla, se reintenta con la hora del cierre
+  await reintentarSalidas();
+}
+
 /* =============== Caja =============== */
 /* Libro de movimientos del EFECTIVO del negocio: ventas y abonos cobrados en efectivo, compras y pagos a proveedores hechos con
    dinero de la caja, gastos e ingresos manuales. Es un libro: nada se edita ni se borra, una anulación agrega un movimiento
@@ -1627,12 +1766,17 @@ function formCierreCaja(previo = {}) {
       // Un cierre por día: otro el mismo día es posible (se contó mal, hubo más ventas), pero se pide confirmar.
       if (cierres.some(c => c.fecha === hoy()) && !(await confirmar({ titulo: 'Ya cerraste hoy', texto: 'Ya cerraste hoy: ¿cerrar otra vez? Los dos cierres quedan anotados.', ok: 'Sí, cerrar otra vez' }))) return reabrir();
       if (diferencia !== 0 && !(await confirmar({ titulo: 'Hay una diferencia', texto: `Debería haber ${money(esperado)} y contaste ${money(contado)}: ${diferencia > 0 ? 'sobran' : 'faltan'} ${money(Math.abs(diferencia))}. Se anota como ${diferencia > 0 ? 'sobrante' : 'faltante'} y la caja queda en ${money(contado)}. ¿Cerrar?`, ok: 'Sí, cerrar' }))) return reabrir();
+      // El cierre marca la salida de quienes están trabajando: se les dice antes, para que no sea una sorpresa.
+      const salidas = await turnosAbiertosParaCierre();
+      if (salidas.length && !(await confirmar({ titulo: 'Se marcará la salida', texto: `Al cerrar la caja se marca la salida de: ${salidas.map(t => `${t.nombre} (desde las ${horaCo(t.entrada)})`).join(', ')}.`, ok: 'Cerrar la caja' }))) return reabrir();
+      const cierreEn = new Date().toISOString();
       aplicar(() => {
         cierres.push({ id: nuevoId(), fecha: hoy(), esperado, contado, diferencia, nota, por: usuarioActual() });
         if (diferencia !== 0) anotarCaja(diferencia > 0 ? 'ingreso' : 'egreso', Math.abs(diferencia), diferencia > 0 ? 'Sobrante en el cierre' : 'Faltante en el cierre', 'ajuste', null);
       }, diferencia === 0 ? 'Caja cerrada: cuadró' : `Caja cerrada: ${diferencia > 0 ? 'sobran' : 'faltan'} ${money(Math.abs(diferencia))}`);
       cerrarHoja(); repintar();
       await enviarAlCerrar();
+      await marcarSalidas(cierreEn);
     });
   });
 }
@@ -1641,7 +1785,7 @@ function formCierreCaja(previo = {}) {
 VISTAS.mas = () => `
   ${cabecera('Más')}
   <div class="card menu"><div class="list">
-    ${[['caja', 'vender', 'Caja', 'Efectivo, gastos y cierre del día'], ['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['empleados', 'clientes', 'Empleados', 'Usuarios y PIN para tu equipo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
+    ${[['caja', 'vender', 'Caja', 'Efectivo, gastos y cierre del día'], ['productos', 'caja', 'Productos e inventario', 'Existencias, precios y pérdidas'], ['proveedores', 'comprar', 'Proveedores y cuentas por pagar', 'Lo que debes a las fincas'], ['graficos', 'grafico', 'Gráficos de ganancias', 'Cómo van tus ventas y tus ganancias'], ['reportes', 'factura', 'Facturas y reportes', 'Por día, semana, mes o año'], ['respaldo', 'respaldo', 'Respaldo y datos', 'Guardar copia, exportar a Excel'], ['sheets', 'hoja', 'Google Sheets', 'Copia automática en tu hoja de cálculo'], ['empleados', 'clientes', 'Empleados', 'Usuarios y PIN para tu equipo'], ['horas', 'factura', 'Horas del equipo', 'Entradas, salidas y horas de tu equipo'], ['ajustes', 'ajustes', 'Ajustes', 'Margen, alerta de stock, vida útil']]
       .map(([v, i, t, s]) => `<button class="row" data-act="ir" data-v="${v}"><span class="ico">${icono(i)}</span><span class="main"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">&rsaquo;</span></button>`).join('')}
   </div></div>
   ${tarjetaSesion()}
@@ -1917,7 +2061,7 @@ function leerSync() {
   try {
     const v = JSON.parse(localStorage.getItem(CLAVE_SYNC));
     if (!v || typeof v !== 'object' || !URL_SCRIPT_RE.test(v.url || '') || typeof v.clave !== 'string') return null; // la clave va vacía en el teléfono de un empleado: él entra con su token
-    return { url: v.url, clave: v.clave, listo: v.listo === true, pendiente: !!v.pendiente, ultimo: typeof v.ultimo === 'string' ? v.ultimo : null, base: typeof v.base === 'string' ? v.base : '', conflicto: v.conflicto === true, error: typeof v.error === 'string' ? v.error : '' };
+    return { url: v.url, clave: v.clave, listo: v.listo === true, pendiente: !!v.pendiente, ultimo: typeof v.ultimo === 'string' ? v.ultimo : null, base: typeof v.base === 'string' ? v.base : '', conflicto: v.conflicto === true, turnosPorCerrar: typeof v.turnosPorCerrar === 'string' ? v.turnosPorCerrar : '', error: typeof v.error === 'string' ? v.error : '' };
   } catch { return null; }
 }
 function guardarSync() {
@@ -1984,6 +2128,7 @@ async function enviarSheet(manual) {
     sync.ultimo = new Date().toISOString(); sync.pendiente = nuevos; sync.error = ''; sync.conflicto = false; cierrePendiente = false;
     if (typeof j.version === 'string') sync.base = j.version;
     guardarSync();
+    reintentarSalidas(); // si un cierre de caja no pudo marcar las salidas, ahora hay conexión
     if (!nuevos) clearTimeout(syncTimer); // un segundo guardado idéntico solo cambiaría la versión del Sheet
     if (manual) aviso('Enviado a Google Sheets');
     return true;
@@ -2041,6 +2186,7 @@ async function sincronizarAlAbrir() {
   if (!sync || !sync.listo || !credencial() || sincronizando || syncEnCurso) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   if (document.querySelector('.sheet-wrap')) return; // con un diálogo abierto no se cambia lo que se está haciendo
+  reintentarSalidas();
   sincronizando = true;
   try {
     let info;
@@ -2223,6 +2369,12 @@ function recalcularCosto(p, lista) {
 const ACCIONES = {
   ir: el => navegar(el.dataset.v),
   cerrar: () => cerrarHoja(),
+  'turno-entrar': () => ficharEntrada(),
+  'turno-recargar': () => { miTurnoError = ''; miTurno = null; pintarMiTurno(); cargarMiTurno(); },
+  'horas-rango': el => { horasRango = ['hoy', 'semana', 'mes'].includes(el.dataset.k) ? el.dataset.k : 'semana'; horasDatos = null; repintar(); },
+  'horas-recargar': () => { horasDatos = null; repintar(); },
+  'horas-corregir': el => formHoras(el.dataset.id),
+  'horas-agregar': () => abrirAgregarTurno(),
   'entrada-modo': el => { if ($('#en-url')) urlTecleada = $('#en-url').value; modoEntrada = el.dataset.m === 'dueno' ? 'dueno' : 'empleado'; pantallaEntrada(); },
   'sesion-salir': () => cerrarSesion(),
   'emp-nuevo': () => formEmpleado(null),
