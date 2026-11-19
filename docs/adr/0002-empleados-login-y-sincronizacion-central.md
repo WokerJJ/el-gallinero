@@ -27,7 +27,7 @@ Se pidieron cuatro cosas: **login**, **roles**, **reloj de horas** y **horarios*
 |---|---|---|
 | 1 | Empleados, login y roles | Pestaña `_empleados`, alta y baja por el dueño, login por PIN con bloqueo, token, y autorización por rol en el script. Atribución real en `por`. |
 | 2 | ~~Sincronización por eventos~~ → resuelta por la sincronización por turnos del [ADR 0003](0003-sincronizacion-por-turnos-con-version.md) | ~~Varios teléfonos a la vez: envío idempotente, cursor de lectura, cola sin conexión, stock y saldos calculados.~~ Se resolvió sin eventos: carga al abrir y envío con comprobación de versión. |
-| 3 | Reloj de horas | Entrada y salida con hora del servidor, horas por día y por empleado, y corrección por el dueño con rastro. |
+| 3 | Reloj de horas → resuelta en el [ADR 0005](0005-reloj-de-horas-con-salida-al-cerrar-la-caja.md) | Entrada y salida con hora del servidor, horas por día y por empleado, y corrección por el dueño con rastro. |
 | 4 | Horarios | El dueño arma turnos por empleado; el empleado los ve; comparación con lo fichado. |
 
 ## Consecuencias

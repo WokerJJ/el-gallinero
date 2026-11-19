@@ -59,9 +59,20 @@ class HojaFalsa {
   celda(f, c) { return this.celdas.get(`${f},${c}`); }
 }
 
-function cargarScript({ clave = 'k-secreta', hojas = [], max = null } = {}) {
+// Date con el reloj fijo: Date.now() y new Date() (sin argumentos) devuelven `ahora`; con argumentos se comporta igual que Date.
+// `reloj.t` se puede cambiar después (s.fijarAhora) para avanzar el tiempo dentro de una misma prueba.
+function dateFijo(reloj) {
+  return class DateFijo extends Date {
+    constructor(...a) { if (a.length === 0) super(reloj.t); else super(...a); }
+    static now() { return reloj.t; }
+  };
+}
+const aMs = v => (typeof v === 'number' ? v : Date.parse(v));
+
+function cargarScript({ clave = 'k-secreta', hojas = [], max = null, ahora = null } = {}) {
   const libro = new Map(hojas.map(h => [h.nombre, h]));
   const contadores = { cerrojo: 0, hojas: 0 }; // cuántas veces se pidió el cerrojo y se buscó una pestaña
+  const reloj = { t: ahora === null ? 0 : aMs(ahora) };
   const cache = new Map(); // CacheService falso (sin caducidad: las pruebas duran milisegundos)
   const sandbox = {
     SpreadsheetApp: { getActiveSpreadsheet: () => ({
@@ -78,13 +89,13 @@ function cargarScript({ clave = 'k-secreta', hojas = [], max = null } = {}) {
       computeDigest: (_alg, texto) => Array.from(crypto.createHash('sha256').update(String(texto), 'utf8').digest()).map(b => (b > 127 ? b - 256 : b)),
       getUuid: () => crypto.randomUUID(),
     },
-    Date, JSON, Math, String, Number, Array, Object,
+    Date: ahora === null ? Date : dateFijo(reloj), JSON, Math, String, Number, Array, Object,
   };
   const ctx = vm.createContext(sandbox);
   let codigo = clave === null ? CODIGO : CODIGO.replace("'CAMBIA-ESTA-CLAVE';", `'${clave}';`);
   if (max !== null) codigo = codigo.replace(/MAX_CLIENTES = \d+;/, `MAX_CLIENTES = ${max};`);
   vm.runInContext(codigo, ctx, { filename: 'Code.gs' });
-  return { libro, ctx, contadores, run: c => vm.runInContext(c, ctx) };
+  return { libro, ctx, contadores, fijarAhora: v => { reloj.t = aMs(v); }, run: c => vm.runInContext(c, ctx) };
 }
 
 const post = (s, cuerpo) => JSON.parse(s.run('doPost')({ postData: { contents: JSON.stringify(cuerpo) } }).texto);
