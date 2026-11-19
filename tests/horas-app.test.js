@@ -11,7 +11,7 @@ const CLAVE = 'mi-clave';
 const MIN = 60000, HORA = 3600000;
 const hace = ms => new Date(Date.now() - ms).toISOString();
 const duenoPost = (s, c) => post(s, { clave: CLAVE, ...c });
-const sync0 = (o = {}) => ({ eg_sync: { url: URL_OK, clave: CLAVE, listo: true, pendiente: false, ultimo: null, base: '', conflicto: false, turnosPorCerrar: '', error: '', ...o } });
+const sync0 = (o = {}) => ({ eg_sync: { url: URL_OK, clave: CLAVE, listo: true, pendiente: false, ultimo: null, base: '', conflicto: false, turnosPorCerrar: [], error: '', ...o } });
 const acceso0 = o => ({ eg_acceso: { exigir: true, url: URL_OK, sesion: null, ...o } });
 
 // El fetch de la app llega al doPost real, y se anotan las llamadas (con la opción de hacer fallar algunas).
@@ -207,9 +207,9 @@ test('cierre · avisa a quién se le marca la salida y, al confirmar, la marca y
   await esperar(60);
   assert.equal(abiertos(s).length, 0, 'la salida quedó marcada');
   assert.equal(a.run('cierres.length'), 1);
-  assert.equal(a.run('sync.turnosPorCerrar'), '');
+  assert.equal(a.run('sync.turnosPorCerrar.length'), 0);
   const c = r.llamadas.find(l => l.accion === 'turnosCerrar');
-  assert.ok(c && Date.now() - Date.parse(c.cierreEn) < 60000, 'manda la hora del cierre');
+  assert.ok(c && !('cierreEn' in c) && c.demoraMs >= 0 && c.demoraMs < 60000, 'manda cuánto pasó desde el cierre, no la hora del teléfono');
   assert.equal(hojaF(s).celda(2, 6), 'cierre');
 });
 test('cierre · si el dueño cancela la confirmación no se cierra la caja ni los turnos', async () => {
@@ -245,14 +245,15 @@ test('cierre · sin conexión las salidas quedan anotadas con la hora del cierre
   await p;
   await esperar(60);
   assert.equal(abiertos(s).length, 1, 'no se pudieron marcar');
-  const anotada = a.run('sync.turnosPorCerrar');
+  const anotada = a.run('sync.turnosPorCerrar[0]');
+  assert.equal(a.run('sync.turnosPorCerrar.length'), 1);
   assert.ok(anotada, 'quedó anotada la hora del cierre');
   r.falla = () => false;
   await a.run('reintentarSalidas()');
   await esperar(40);
   assert.equal(abiertos(s).length, 0);
-  assert.equal(a.run('sync.turnosPorCerrar'), '');
-  assert.ok(Date.parse(hojaF(s).celda(2, 5)) <= Date.parse(anotada) + 1000, 'la salida es la hora del cierre, no la de ahora');
+  assert.equal(a.run('sync.turnosPorCerrar.length'), 0);
+  assert.ok(Date.parse(hojaF(s).celda(2, 5)) <= Date.parse(anotada) + 5000, 'la salida es la hora del cierre, no la de ahora');
 });
 test('cierre · una hora del cierre demorada no cierra el turno de quien entró después', async () => {
   const s = mundo({ empleados: ['luis', 'ana'] });
@@ -260,8 +261,7 @@ test('cierre · una hora del cierre demorada no cierra el turno de quien entró 
   await (await telefonoDeEmpleado(s, red(s), 'ana', '7351')).a.run('ficharEntrada()');
   await esperar(40);
   hojaF(s).celdas.set('2,4', hace(3 * HORA));                  // Luis entró hace 3 h; Ana acaba de entrar (después del cierre)
-  const cierre = hace(HORA);
-  duenoPost(s, { accion: 'turnosCerrar', cierreEn: cierre });
+    duenoPost(s, { accion: 'turnosCerrar', demoraMs: HORA });
   const quedan = abiertos(s);
   assert.equal(quedan.length, 1);
   assert.equal(quedan[0].nombre, 'Ana Gil');
@@ -275,7 +275,142 @@ test('cierre · con un script anterior al reloj el cierre funciona igual y no qu
   await cerrar(a);
   await esperar(40);
   assert.equal(a.run('cierres.length'), 1);
-  assert.equal(a.run('sync.turnosPorCerrar'), '', 'no se reintenta para siempre');
+  assert.equal(a.run('sync.turnosPorCerrar.length'), 0, 'no se reintenta para siempre');
+});
+
+test('cierre · dos cierres con la llamada caída, luego vuelve la red: cada turno queda con la salida de su cierre', async () => {
+  const s = mundo({ empleados: ['luis', 'ana'] });
+  await (await telefonoDeEmpleado(s)).a.run('ficharEntrada()');
+  await esperar(40);
+  hojaF(s).celdas.set('2,4', hace(5 * HORA));                                  // Luis entró hace 5 h
+  const r = red(s, c => c.accion === 'turnosCerrar');                          // sin red para marcar salidas
+  const a = duenoConCaja(s, r);
+  await esperar(60);
+  const p1 = cerrar(a); await esperar(80); await responder(a, true); await p1;  // 1.er cierre (Luis trabajando)
+  const primero = a.run('sync.turnosPorCerrar[0]');
+  await esperar(1200);                                                          // pasa el tiempo
+  await (await telefonoDeEmpleado(s, red(s), 'ana', '7351')).a.run('ficharEntrada()');
+  await esperar(40);
+  hojaF(s).celdas.set('3,4', hace(1000));                                       // Ana entró después del primer cierre
+  const p2 = cerrar(a); await esperar(30); await responder(a, true);          // «Ya cerraste hoy»
+  await esperar(80); await responder(a, true); await p2;   // 2.º cierre (Ana trabajando)
+  assert.equal(a.run('sync.turnosPorCerrar.length'), 2, 'el segundo cierre no descarta el primero');
+  assert.equal(a.run('sync.turnosPorCerrar[0]'), primero, 'en orden');
+  assert.equal(abiertos(s).length, 2);
+  r.falla = () => false;
+  await a.run('reintentarSalidas()'); await esperar(40);
+  assert.equal(abiertos(s).length, 0);
+  assert.equal(a.run('sync.turnosPorCerrar.length'), 0);
+  const msLuis = Date.parse(hojaF(s).celda(2, 5)), msAna = Date.parse(hojaF(s).celda(3, 5));
+  // El script redondea la salida al minuto hacia abajo: hasta 60 s antes del cierre.
+  assert.ok(msLuis <= Date.parse(primero) + 1000 && msLuis > Date.parse(primero) - 61000, 'Luis sale en su cierre (el primero), no en el segundo');
+  assert.ok(msAna >= Date.parse(hojaF(s).celda(3, 4)) && hojaF(s).celda(3, 6) === 'cierre', 'Ana sale con el segundo cierre');
+});
+test('cierre · la sincronización lee el texto antiguo de turnosPorCerrar como una lista y descarta la basura', () => {
+  const ok = new Date().toISOString();
+  const a = cargarApp({ seed: { ...sembrar(), ...sync0({ turnosPorCerrar: ok }) } });
+  assert.equal(a.run('JSON.stringify(sync.turnosPorCerrar)'), JSON.stringify([ok]));
+  const b = cargarApp({ seed: { ...sembrar(), ...sync0({ turnosPorCerrar: [ok, 'hola', 5, null, ok] }) } });
+  assert.equal(b.run('JSON.stringify(sync.turnosPorCerrar)'), JSON.stringify([ok, ok]));
+  const c = cargarApp({ seed: { ...sembrar(), ...sync0({ turnosPorCerrar: 42 }) } });
+  assert.equal(c.run('sync.turnosPorCerrar.length'), 0);
+});
+test('cierre · pulsar «Cerrar caja» dos veces con la consulta de turnos lenta deja un solo cierre', async () => {
+  const s = mundo();
+  const r = red(s);
+  const base = r.fetch;
+  r.fetch = async (u, op) => { if (JSON.parse(op.body).accion === 'turnosAbiertos') await esperar(150); return base(u, op); };
+  const a = duenoConCaja(s, r);
+  await esperar(60);
+  a.run('formCierreCaja()');
+  const b = a.hoja().querySelector('.sheet-body');
+  b.querySelector('#ci-contado').value = '100000'; b.querySelector('#ci-nota').value = '';
+  const enviar = () => b.querySelector('#f-cierre').listeners.submit[0]({ preventDefault() {} });
+  const p1 = enviar(), p2 = enviar();
+  await Promise.all([p1, p2]); await esperar(60);
+  assert.equal(a.run('cierres.length'), 1);
+});
+test('cierre · el momento del cierre queda anotado ANTES de enviar al Sheet (si se cierra la pestaña, no se pierde)', async () => {
+  const s = mundo();
+  await conTurnoAbierto(s);
+  const r = red(s);
+  const base = r.fetch;
+  let anotado = null, a;
+  r.fetch = async (u, op) => {
+    if (anotado === null && a.run('cierres.length') === 1) anotado = a.run('JSON.parse(localStorage.getItem("eg_sync")).turnosPorCerrar.length'); // la primera llamada tras anotar el cierre
+    return base(u, op);
+  };
+  a = duenoConCaja(s, r);
+  await esperar(60);
+  const p = cerrar(a); await esperar(80); await responder(a, true); await p; await esperar(40);
+  assert.equal(anotado, 1, 'al enviar los datos el momento ya estaba guardado');
+});
+test('conexión · reconectar el mismo enlace conserva las salidas por marcar y desconectar avisa de ellas', async () => {
+  const s = mundo();
+  const ok = new Date().toISOString();
+  const a = cargarApp({ fetch: red(s, c => c.accion === 'turnosCerrar').fetch, seed: { ...sembrar(), ...sync0({ listo: false, turnosPorCerrar: [ok] }) } });
+  await a.run(`conectarSheet('${URL_OK}', '${CLAVE}')`); await esperar(60);
+  assert.equal(a.run('JSON.stringify(sync.turnosPorCerrar)'), JSON.stringify([ok]));
+  a.run("ACCIONES['sheets-desconectar']()"); await esperar(30);
+  assert.match(textoHoja(a), /1 cierre\(s\) de caja cuyas salidas/);
+});
+test('empleado · en un teléfono compartido el Inicio del siguiente no muestra el turno del anterior', async () => {
+  const s = mundo({ empleados: ['luis', 'ana'] });
+  const r = red(s);
+  const base = r.fetch;
+  let soltar; const gate = new Promise(res => { soltar = res; }); let retener = false;
+  r.fetch = async (u, op) => { if (retener && JSON.parse(op.body).accion === 'miTurno') await gate; return base(u, op); };
+  const { a } = await telefonoDeEmpleado(s, r);
+  await a.run('ficharEntrada()'); await esperar(60);
+  assert.match(a.run('htmlMiTurno()'), /Trabajando desde/);
+  await a.run('cerrarSesion()');
+  assert.ok(!/Trabajando desde|Hoy:/.test(a.run('htmlMiTurno()')), 'al salir se limpia');
+  retener = true;
+  await a.run("entrarEmpleado('', 'ana', '7351')"); await esperar(30);
+  assert.ok(!/Trabajando desde|Hoy:/.test(a.run('htmlMiTurno()')), 'Ana no ve lo de Luis mientras carga el suyo');
+  soltar(); await esperar(60);
+  assert.match(a.run('htmlMiTurno()'), /Entrar a trabajar/);
+});
+test('dueño · a un turno en curso se le puede poner la salida (opcional) y se envía con motivo', async () => {
+  const s = mundo();
+  await (await telefonoDeEmpleado(s)).a.run('ficharEntrada()');
+  await esperar(40);
+  hojaF(s).celdas.set('2,4', hace(3 * HORA));
+  const r = red(s);
+  const a = cargarApp({ fetch: r.fetch, seed: { ...sembrar(), ...sync0() } });
+  a.ir('horas'); await esperar(80);
+  const id = hojaF(s).celda(2, 1);
+  a.run(`formHoras('${id}')`);
+  assert.match(textoHoja(a), /id="hc-salida"/);
+  assert.match(textoHoja(a), /normalmente la salida la marca el cierre de caja/);
+  const b = a.hoja().querySelector('.sheet-body');
+  const local = ms => new Date(ms - 5 * HORA).toISOString().slice(0, 16);
+  Object.assign(b._q, { '#hc-entrada': { value: local(Date.now() - 3 * HORA) }, '#hc-salida': { value: local(Date.now() - HORA) }, '#hc-motivo': { value: 'Se fue sin cerrar caja' } });
+  await b._q['#f-horas'].listeners.submit[0]({ preventDefault() {} }); await esperar(80);
+  const c = r.llamadas.find(l => l.accion === 'fichajeCorregir');
+  assert.ok(c && c.salida && c.motivo === 'Se fue sin cerrar caja');
+  assert.equal(abiertos(s).length, 0, 'el turno quedó cerrado');
+  assert.equal(hojaF(s).celda(2, 6), 'corregido');
+});
+test('dueño · sin la Caja activada la pantalla de horas avisa que los turnos se cerrarán solos a las 16 h', async () => {
+  const s = mundo();
+  const sin = cargarApp({ fetch: red(s).fetch, seed: { ...sembrar(), ...sync0() } });
+  assert.match(sin.run('VISTAS.horas()'), /Activa la Caja[\s\S]*16 h/);
+  const con = duenoConCaja(s, red(s));
+  assert.ok(!/Activa la Caja/.test(con.run('VISTAS.horas()')));
+});
+test('script anterior · se reconoce por el código o, en scripts viejos, por el texto', () => {
+  const a = cargarApp();
+  assert.equal(a.run("scriptAnterior({ codigo: 'accion_desconocida', message: 'x' })"), true);
+  assert.equal(a.run("scriptAnterior(new Error('Acción desconocida'))"), true);
+  assert.equal(a.run("scriptAnterior(new Error('accion desconocida'))"), true);
+  assert.equal(a.run("scriptAnterior(new Error('timeout'))"), false);
+  assert.equal(a.run('scriptAnterior(null)'), false);
+});
+test('script anterior · postScript copia el código del error', async () => {
+  const a = cargarApp({ fetch: async () => ({ json: async () => ({ ok: false, error: 'otra cosa', codigo: 'accion_desconocida' }) }) });
+  const e = await a.run(`postScript('${URL_OK}', {}).catch(e => e)`);
+  assert.equal(e.codigo, 'accion_desconocida');
 });
 
 /* ---------- utilidades ---------- */
