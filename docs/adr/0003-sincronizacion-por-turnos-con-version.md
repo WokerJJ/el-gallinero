@@ -27,4 +27,5 @@ El negocio es pequeño y las personas trabajan por turnos, así que no hace falt
 - **Lo que se ve puede estar hasta unos minutos desactualizado** (se carga al abrir o tras 5 minutos fuera de la app, no en vivo). Dos personas editando a la vez no se pierden: el segundo en enviar recibe el aviso de conflicto.
 - Quien elige «usar los del Sheet» pierde sus cambios sin enviar (queda `eg_prev`); quien elige los de su teléfono pisa los del otro (queda la generación anterior del Sheet). Es una decisión explícita, no un accidente.
 - Si el script publicado es anterior a esto, la app lo detecta (no hay versión) y sigue funcionando como antes, sin comprobación.
+- En un teléfono compartido `credencial()` prefiere la clave del dueño sobre el token del empleado, así que el envío no se frena al vencer la sesión del empleado. Es una decisión consciente y consecuencia de que ese teléfono ya guarda la clave del dueño.
 - La columna `B7` no la leen los paneles; no cambia el contrato con la plantilla ni con `Paneles.gs`.

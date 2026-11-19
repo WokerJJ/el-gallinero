@@ -82,8 +82,9 @@ const MSJ_PIN = 'El PIN debe tener de 4 a 6 dígitos, sin repetir el mismo núme
 const MAX_LOGIN_MINUTO = 30; // entradas (acertadas o no) que acepta todo el script por minuto
 
 // Todo lo que el script sabe hacer (salvo «login», que no exige credenciales): qué roles pueden pedirlo y quién lo ejecuta.
-// Lo que no está aquí no existe. El empleado nunca puede guardar, leer ni administrar: mientras el Sheet sea un espejo
-// por reemplazo, un envío suyo pisaría los datos del negocio.
+// Lo que no está aquí no existe. El empleado puede leer y guardar con su token (guardar_ comprueba la versión base, ADR 0003,
+// así que un envío con versión vieja se rechaza y no pisa datos); no puede traer clientes ni administrar empleados,
+// y su ping no trae cifras del negocio.
 const ACCIONES = {
   ping: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return estado_(q.rol !== 'dueno'); } },
   yo: { roles: ['dueno', 'empleado'], ejecutar: function (p, q) { return yo_(q); } },
