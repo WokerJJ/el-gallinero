@@ -15,8 +15,8 @@ const MIN = 60000, HORA = 3600000;
 const fichajes = s => s.libro.get('_fichajes');
 // columnas de _fichajes: id 1, empleadoId 2, nombre 3, entrada 4, salida 5, cierre 6, nota 7, creado 8
 const ponerEntrada = (s, fila, iso) => fichajes(s).celdas.set(`${fila},4`, iso);
-function equipo() {
-  const s = cargarScript();
+function equipo(ahora = null) {
+  const s = cargarScript({ ahora });
   crear(s); crear(s, { usuario: 'ana', nombre: 'Ana Gil', pin: '7351' });
   return { s, luis: entrar(s), ana: entrar(s, { usuario: 'ana', pin: '7351' }) };
 }
@@ -27,7 +27,7 @@ test('fichar · el empleado abre su turno con la hora del servidor, no la del te
   const r = emp(s, luis, { accion: 'fichar', entrada: '2000-01-01T00:00:00Z', ahora: '2000-01-01T00:00:00Z', hora: 1 });
   assert.equal(r.ok, true);
   assert.equal(r.yaAbierto, false);
-  assert.ok(Math.abs(Date.parse(r.turno.entrada) - Date.now()) < 5000, 'la hora que manda el teléfono se ignora');
+  assert.ok(Math.abs(Date.parse(r.turno.entrada) - Date.now()) < MIN, 'la hora que manda el teléfono se ignora');
   assert.equal(r.turno.abierto, true);
   assert.equal(r.turno.nombre, 'Luis Pérez');
   assert.equal(fichajes(s).oculta, true, 'la pestaña de turnos es oculta');
@@ -96,19 +96,59 @@ test('cierre · turnosCerrar marca la salida de todos los turnos abiertos, solo 
   assert.equal(dueno(s, { accion: 'turnosCerrar' }).cerrados.length, 0, 'idempotente');
   assert.equal(dueno(s, { accion: 'turnosAbiertos' }).abiertos.length, 0);
 });
-test('cierre · si la llamada se demoró, usa la hora del cierre; nunca una futura; y no toca turnos que empezaron después', () => {
+test('cierre · si la llamada se demoró (demoraMs), usa la hora del cierre; y no toca turnos que empezaron después', () => {
   const { s, luis, ana } = equipo();
   emp(s, luis, { accion: 'fichar' }); emp(s, ana, { accion: 'fichar' });
   ponerEntrada(s, 2, hace(3 * HORA));               // Luis entró hace 3 h
   ponerEntrada(s, 3, hace(30 * MIN));               // Ana entró hace 30 min (después del cierre)
-  const r = dueno(s, { accion: 'turnosCerrar', cierreEn: hace(HORA) });
+  const r = dueno(s, { accion: 'turnosCerrar', demoraMs: HORA });
   assert.equal(r.cerrados.length, 1, 'Ana empezó después del cierre: sigue abierta');
   assert.equal(r.cerrados[0].nombre, 'Luis Pérez');
-  assert.ok(r.cerrados[0].minutos >= 119 && r.cerrados[0].minutos <= 121, `2 h hasta el cierre: ${r.cerrados[0].minutos}`);
+  assert.ok(r.cerrados[0].minutos >= 118 && r.cerrados[0].minutos <= 121, `2 h hasta el cierre: ${r.cerrados[0].minutos}`);
   assert.equal(emp(s, ana, { accion: 'miTurno' }).turno.abierto, true);
-  // una hora de cierre futura se acota a «ahora»
-  const f = dueno(s, { accion: 'turnosCerrar', cierreEn: new Date(Date.now() + 5 * HORA).toISOString() });
-  assert.ok(Date.parse(f.cerrados[0].salida) <= Date.now() + 1000);
+});
+test('cierre · la hora absoluta del teléfono (cierreEn) ya no se usa: un reloj desfasado no importa', () => {
+  const { s, luis } = equipo();
+  emp(s, luis, { accion: 'fichar' });
+  ponerEntrada(s, 2, hace(3 * HORA));
+  const r = dueno(s, { accion: 'turnosCerrar', cierreEn: '2000-01-01T00:00:00Z', demoraMs: 0 });
+  assert.equal(r.cerrados.length, 1);
+  assert.ok(Math.abs(Date.parse(r.cerrados[0].salida) - Date.now()) < 2 * MIN, 'la salida es la hora del script');
+  const { s: s2, luis: l2 } = equipo();
+  emp(s2, l2, { accion: 'fichar' }); ponerEntrada(s2, 2, hace(3 * HORA));
+  const f = dueno(s2, { accion: 'turnosCerrar', cierreEn: new Date(Date.now() + 5 * HORA).toISOString() });
+  assert.ok(Date.parse(f.cerrados[0].salida) <= Date.now() + 1000, 'sin demora: ahora, nunca una hora futura');
+});
+test('cierre · una demora enorme se acota a 7 días', () => {
+  const { s, luis } = equipo('2026-11-18T15:00:30Z');
+  emp(s, luis, { accion: 'fichar' });
+  ponerEntrada(s, 2, '2026-11-08T15:00:00.000Z');           // abierto hace 10 días
+  const r = dueno(s, { accion: 'turnosCerrar', demoraMs: 365 * 86400000 });
+  assert.equal(r.cerrados.length, 1);
+  assert.equal(r.cerrados[0].salida, '2026-11-11T15:00:00.000Z', 'ahora − 7 días, al minuto');
+});
+test('cierre · una demoraMs basura no cierra de más ni produce salidas antes de la entrada o futuras', () => {
+  const basura = ['60000', 'x', NaN, -5, [5], Infinity, -Infinity, {}, true, null];
+  for (const demoraMs of basura) {
+    const { s, luis, ana } = equipo('2026-11-18T15:00:30Z');
+    emp(s, luis, { accion: 'fichar' }); emp(s, ana, { accion: 'fichar' });
+    ponerEntrada(s, 2, '2026-11-18T12:00:00.000Z');
+    ponerEntrada(s, 3, '2026-11-18T14:59:50.000Z');          // entró hace segundos (su entrada es posterior a cualquier cierre real)
+    const r = JSON.parse(JSON.stringify(s.run('turnosCerrar_')({ demoraMs })));
+    assert.equal(r.cerrados.length, 2, `sin referencia válida se cierran los abiertos (${String(demoraMs)})`);
+    for (const c of r.cerrados) assert.ok(Date.parse(c.salida) >= Date.parse(c.entrada) && Date.parse(c.salida) <= Date.parse('2026-11-18T15:00:30Z'), `salida coherente (${String(demoraMs)})`);
+    assert.equal(r.cerrados[0].salida, '2026-11-18T15:00:00.000Z');
+  }
+});
+test('cierre · un cierre pendiente viejo gana al tope: turno de hace 30 h con cierre de hace 20 h sale con cierre «cierre»', () => {
+  const { s, luis } = equipo('2026-11-18T15:00:30Z');
+  emp(s, luis, { accion: 'fichar' });
+  ponerEntrada(s, 2, '2026-11-17T09:00:00.000Z');           // hace 30 h
+  const r = dueno(s, { accion: 'turnosCerrar', demoraMs: 20 * HORA });
+  assert.equal(r.cerrados.length, 1);
+  assert.equal(r.cerrados[0].cierre, 'cierre');
+  assert.equal(r.cerrados[0].salida, '2026-11-17T19:00:00.000Z', 'la hora real del cierre, no entrada + 16 h');
+  assert.equal(fichajes(s).celda(2, 6), 'cierre');
 });
 test('tope · un turno abierto más de 16 horas se cierra solo, marcado «tope», y el empleado puede fichar de nuevo', () => {
   const { s, luis } = equipo();
@@ -118,7 +158,7 @@ test('tope · un turno abierto más de 16 horas se cierra solo, marcado «tope»
   assert.equal(r.yaAbierto, false, 'el viejo se cerró y se abrió uno nuevo');
   assert.equal(fichajes(s).celda(2, 6), 'tope');
   const salida = Date.parse(fichajes(s).celda(2, 5)), entrada = Date.parse(fichajes(s).celda(2, 4));
-  assert.equal(salida - entrada, 16 * HORA);
+  assert.equal(salida, Math.floor((entrada + 16 * HORA) / MIN) * MIN, 'entrada + 16 h, truncado al minuto');
   assert.equal(fichajes(s).getLastRow(), 3);
 });
 
@@ -234,4 +274,137 @@ test('acciones · las del reloj están en la tabla con el rol correcto', () => {
   assert.deepEqual(tabla.fichar, ['empleado']);
   assert.deepEqual(tabla.miTurno, ['empleado']);
   for (const a of ['turnosAbiertos', 'turnosCerrar', 'turnosListar', 'fichajeCorregir', 'fichajeAgregar']) assert.deepEqual(tabla[a], ['dueno'], a);
+});
+
+/* ---------- filas ilegibles, traslapes y correcciones (BUG-012, BUG-013) ---------- */
+// Escribe una fila de turno directamente en la pestaña (como si alguien la hubiera editado a mano en el Sheet).
+const sembrar = (s, fila, empleadoId, nombre, entrada, salida, extra = {}) =>
+  [`f${fila}`, empleadoId, nombre, entrada, salida, extra.cierre ?? '', '', entrada].forEach((v, i) => fichajes(s).celdas.set(`${fila},${i + 1}`, v));
+const idDe = (s, usuario) => dueno(s, { accion: 'empleadoListar' }).empleados.find(e => e.usuario === usuario).id;
+
+test('filas ilegibles · una salida con basura se omite y no rompe turnosListar, miTurno ni turnosAbiertos', () => {
+  const { s, luis } = equipo();
+  const id = idDe(s, 'luis');
+  emp(s, luis, { accion: 'fichar' });                        // fila 2: abierta y sana
+  sembrar(s, 3, id, 'Luis Pérez', hace(5 * HORA), 'basura');  // fila 3: salida ilegible
+  const hoy = new Date(Date.now() - 5 * HORA).toISOString().slice(0, 10), ayer = new Date(Date.now() - 5 * HORA - 86400000).toISOString().slice(0, 10);
+  const l = dueno(s, { accion: 'turnosListar', desde: ayer, hasta: hoy });
+  assert.equal(l.ok, true);
+  assert.equal(l.turnos.length, 1, 'la fila corrupta se omite');
+  assert.equal(emp(s, luis, { accion: 'miTurno' }).ok, true);
+  const a = dueno(s, { accion: 'turnosAbiertos' });
+  assert.equal(a.ok, true);
+  assert.equal(a.abiertos.length, 1);
+  assert.equal(dueno(s, { accion: 'turnosCerrar' }).ok, true);
+});
+test('corregir · no se puede traslapar con otro turno del mismo empleado, pero sí con el de otro empleado', () => {
+  const { s } = equipo('2026-11-18T15:00:30Z');
+  const luis = idDe(s, 'luis'), ana = idDe(s, 'ana');
+  dueno(s, { accion: 'turnosListar', desde: '2026-11-17', hasta: '2026-11-17' }); // crea la tabla
+  sembrar(s, 2, luis, 'Luis Pérez', '2026-11-18T08:00:00.000Z', '2026-11-18T10:00:00.000Z');
+  sembrar(s, 3, luis, 'Luis Pérez', '2026-11-18T11:00:00.000Z', '2026-11-18T12:00:00.000Z');
+  sembrar(s, 4, ana, 'Ana Gil', '2026-11-18T09:00:00.000Z', '2026-11-18T10:00:00.000Z');
+  const r = dueno(s, { accion: 'fichajeCorregir', id: 'f3', entrada: '2026-11-18T09:30:00.000Z', motivo: 'se cruza' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /cruza/);
+  assert.equal(fichajes(s).celda(3, 4), '2026-11-18T11:00:00.000Z', 'no se modificó');
+  assert.equal(dueno(s, { accion: 'fichajeCorregir', id: 'f3', entrada: '2026-11-18T10:00:00.000Z', motivo: 'pegado al anterior' }).ok, true, 'tocarse en el borde no es cruzarse');
+  assert.equal(dueno(s, { accion: 'fichajeCorregir', id: 'f4', entrada: '2026-11-18T08:30:00.000Z', motivo: 'otro empleado' }).ok, true);
+});
+test('corregir · puede poner la salida a un turno abierto, con motivo y rastro', () => {
+  const { s } = equipo('2026-11-18T15:00:30Z');
+  const luis = idDe(s, 'luis');
+  dueno(s, { accion: 'turnosListar', desde: '2026-11-17', hasta: '2026-11-17' });
+  sembrar(s, 2, luis, 'Luis Pérez', '2026-11-18T11:00:00.000Z', '');   // abierto
+  assert.equal(dueno(s, { accion: 'fichajeCorregir', id: 'f2', salida: '2026-11-18T13:00:00.000Z' }).ok, false, 'sin motivo');
+  const r = dueno(s, { accion: 'fichajeCorregir', id: 'f2', salida: '2026-11-18T13:00:00.000Z', motivo: 'Se olvidó cerrar' });
+  assert.equal(r.ok, true);
+  assert.equal(r.turno.abierto, false);
+  assert.equal(r.turno.minutos, 120);
+  const log = s.libro.get('_fichajes_log');
+  assert.equal(log.celda(2, 4), 'salida');
+  assert.equal(log.celda(2, 5), '', 'antes: sin salida');
+  assert.equal(log.celda(2, 6), '2026-11-18T13:00:00.000Z');
+  assert.equal(log.celda(2, 7), 'Se olvidó cerrar');
+});
+test('corregir y agregar · rechazan una entrada de hace más de 400 días', () => {
+  const { s, luis } = equipo('2026-11-18T15:00:30Z');
+  const id = idDe(s, 'luis');
+  emp(s, luis, { accion: 'fichar' });
+  const vieja = '2025-01-01T10:00:00.000Z';                     // ~686 días antes
+  const c = dueno(s, { accion: 'fichajeCorregir', id: fichajes(s).celda(2, 1), entrada: vieja, motivo: 'dedo' });
+  assert.equal(c.ok, false);
+  assert.match(c.error, /400 días/);
+  const a = dueno(s, { accion: 'fichajeAgregar', empleadoId: id, entrada: vieja, salida: '2025-01-01T12:00:00.000Z', motivo: 'dedo' });
+  assert.equal(a.ok, false);
+  assert.match(a.error, /400 días/);
+  const ok = dueno(s, { accion: 'fichajeAgregar', empleadoId: id, entrada: '2026-01-01T10:00:00.000Z', salida: '2026-01-01T12:00:00.000Z', motivo: 'Turno olvidado' });
+  assert.equal(ok.ok, true, ok.error);
+});
+
+/* ---------- minutos exactos (EVA-016) ---------- */
+test('minutos exactos · lo que escribe el script va al minuto y tres turnos con segundos sueltos suman justo lo esperado', () => {
+  const { s, luis } = equipo('2026-11-18T14:00:00Z');
+  const tramos = [['14:00:50', '15:30:40'], ['16:00:59', '17:15:10'], ['18:00:30', '19:00:59']];
+  for (const [e, sa] of tramos) {
+    s.fijarAhora(`2026-11-18T${e}Z`); emp(s, luis, { accion: 'fichar' });
+    s.fijarAhora(`2026-11-18T${sa}Z`); assert.equal(dueno(s, { accion: 'turnosCerrar' }).cerrados.length, 1);
+  }
+  for (let fila = 2; fila <= 4; fila++) for (const col of [4, 5]) assert.equal(Date.parse(fichajes(s).celda(fila, col)) % MIN, 0, `fila ${fila} col ${col} al minuto`);
+  const l = dueno(s, { accion: 'turnosListar', desde: '2026-11-18', hasta: '2026-11-18' });
+  assert.deepEqual(l.turnos.map(t => t.minutos).sort((a, b) => a - b), [60, 75, 90]);
+  assert.equal(l.totales[0].minutos, 225);
+});
+test('minutos exactos · un turno que cruza la medianoche suma lo mismo por días que entero', () => {
+  const { s, luis } = equipo('2026-11-10T04:00:00Z');
+  s.fijarAhora('2026-11-10T04:30:50Z'); emp(s, luis, { accion: 'fichar' });       // 23:30 del 9 en Colombia
+  s.fijarAhora('2026-11-10T06:10:20Z'); dueno(s, { accion: 'turnosCerrar' });     // 01:10 del 10
+  const min = (a, b) => dueno(s, { accion: 'turnosListar', desde: a, hasta: b }).totales[0].minutos;
+  assert.equal(min('2026-11-09', '2026-11-09'), 30);
+  assert.equal(min('2026-11-10', '2026-11-10'), 70);
+  assert.equal(min('2026-11-09', '2026-11-10'), 100);
+  assert.equal(min('2026-11-09', '2026-11-09') + min('2026-11-10', '2026-11-10'), min('2026-11-09', '2026-11-10'));
+});
+
+/* ---------- miTurno con valores numéricos y reloj fijo (EVA-019) ---------- */
+const mi = (s, luis) => { const r = emp(s, luis, { accion: 'miTurno' }); return { hoyMin: r.hoyMin, semanaMin: r.semanaMin, turno: r.turno }; };
+test('miTurno · a las 00:30 del lunes (Colombia): el domingo es de la semana vieja y el turno que cruza la medianoche se reparte', () => {
+  const { s, luis } = equipo('2026-11-16T05:30:00Z');     // lunes 16, 00:30 en Colombia
+  const id = idDe(s, 'luis');
+  dueno(s, { accion: 'turnosListar', desde: '2026-11-15', hasta: '2026-11-15' });
+  sembrar(s, 2, id, 'Luis Pérez', '2026-11-15T15:00:00.000Z', '2026-11-15T17:00:00.000Z', { cierre: 'cierre' }); // domingo 10:00–12:00
+  sembrar(s, 3, id, 'Luis Pérez', '2026-11-16T03:00:00.000Z', '2026-11-16T05:20:00.000Z', { cierre: 'cierre' }); // dom 22:00 → lun 00:20
+  const r = mi(s, luis);
+  assert.equal(r.hoyMin, 20);
+  assert.equal(r.semanaMin, 20, 'el domingo es de la semana anterior');
+  // turno abierto que empezó el domingo a las 23:50 (04:50Z): 40 min en total, 30 de hoy
+  sembrar(s, 4, id, 'Luis Pérez', '2026-11-16T04:50:00.000Z', '');
+  const r2 = mi(s, luis);
+  assert.equal(r2.turno.abierto, true);
+  assert.equal(r2.turno.minutos, 40);
+  assert.equal(r2.hoyMin, 20 + 30);
+  assert.equal(r2.semanaMin, 20 + 30);
+});
+test('miTurno · a las 23:50 del domingo (Colombia): hoy y semana suman el domingo y la semana desde el lunes', () => {
+  const { s, luis } = equipo('2026-11-23T04:50:00Z');     // domingo 22, 23:50 en Colombia
+  const id = idDe(s, 'luis');
+  dueno(s, { accion: 'turnosListar', desde: '2026-11-22', hasta: '2026-11-22' });
+  sembrar(s, 2, id, 'Luis Pérez', '2026-11-16T15:00:00.000Z', '2026-11-16T17:00:00.000Z', { cierre: 'cierre' }); // lunes 10–12
+  sembrar(s, 3, id, 'Luis Pérez', '2026-11-23T01:00:00.000Z', '2026-11-23T03:00:00.000Z', { cierre: 'cierre' }); // domingo 20–22
+  sembrar(s, 4, id, 'Luis Pérez', '2026-11-23T04:00:00.000Z', '');                                               // abierto desde 23:00
+  sembrar(s, 5, id, 'Luis Pérez', '2026-11-15T15:00:00.000Z', '2026-11-15T17:00:00.000Z', { cierre: 'cierre' }); // domingo anterior: fuera
+  const r = mi(s, luis);
+  assert.equal(r.turno.minutos, 50);
+  assert.equal(r.hoyMin, 120 + 50);
+  assert.equal(r.semanaMin, 120 + 120 + 50);
+  assert.ok(Number.isInteger(r.hoyMin) && Number.isInteger(r.semanaMin));
+});
+
+test('despacho · una acción desconocida trae codigo «accion_desconocida»; los demás errores no', () => {
+  const s = cargarScript();
+  const r = post(s, { clave: CLAVE, accion: 'noExiste' });
+  assert.equal(r.ok, false);
+  assert.equal(r.codigo, 'accion_desconocida');
+  assert.equal(post(s, { clave: 'mala', accion: 'ping' }).codigo, undefined);
+  assert.equal(post(s, { clave: CLAVE, accion: 'fichar' }).codigo, undefined, 'prohibido no lleva ese código');
 });

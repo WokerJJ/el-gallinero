@@ -55,7 +55,7 @@ function doPost(e) {
     if (!quien) return salida_(typeof p.token === 'string' && !claveOk ? { ok: false, error: 'La sesión venció: entra de nuevo', sesion: false } : { ok: false, error: 'Clave incorrecta' });
     // Solo existe lo que está en la tabla ACCIONES (propiedades propias: «constructor» o «__proto__» no cuentan).
     const accion = typeof p.accion === 'string' && Object.prototype.hasOwnProperty.call(ACCIONES, p.accion) ? ACCIONES[p.accion] : null;
-    if (!accion) return salida_({ ok: false, error: 'Acción desconocida' });
+    if (!accion) return salida_({ ok: false, error: 'Acción desconocida', codigo: 'accion_desconocida' });
     if (accion.roles.indexOf(quien.rol) < 0) return salida_({ ok: false, error: 'No tienes permiso para esta acción', prohibido: true });
     return salida_(accion.ejecutar(p, quien));
   } catch (err) {
@@ -309,8 +309,12 @@ const TOPE_TURNO_MS = 16 * 3600000; // un turno abierto más de 16 horas se cier
 const UTC_COLOMBIA_MS = 5 * 3600000; // Colombia es UTC−5 todo el año
 const MAX_RANGO_DIAS = 92;
 const TOLERANCIA_FUTURO_MS = 60000;
+const MAX_DEMORA_CIERRE_MS = 7 * 86400000; // lo más que se retrocede una salida por una llamada de cierre demorada
+const MAX_ANTIGUEDAD_MS = 400 * 86400000; // una entrada más vieja que esto se considera un error de dedo
 
 function iso_(ms) { return new Date(ms).toISOString(); }
+// Lo que escribe el script se trunca al minuto: así la suma de los tramos es exacta (sin segundos sueltos que se pierdan).
+function alMinuto_(ms) { return Math.floor(ms / 60000) * 60000; }
 function inicioDiaCo_(ms) {
   const d = new Date(ms - UTC_COLOMBIA_MS);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) + UTC_COLOMBIA_MS;
@@ -330,17 +334,19 @@ function turnoPublico_(f, ahora) {
   const e = ms_(f.entrada), abierto = !f.salida, s = abierto ? null : ms_(f.salida);
   return { id: f.id, empleadoId: f.empleadoId, nombre: f.nombre, entrada: iso_(e), salida: abierto ? null : iso_(s), abierto: abierto, minutos: Math.max(0, Math.floor(((abierto ? ahora : s) - e) / 60000)), cierre: f.cierre || '', nota: f.nota || '' };
 }
-function turnosValidos_(t) { return t.filas.filter(function (f) { return isFinite(ms_(f.entrada)); }); }
+// Una fila con la entrada o la salida ilegible (editada a mano en el Sheet) se omite: no debe romper la lista de todos.
+function turnosValidos_(t) { return t.filas.filter(function (f) { return isFinite(ms_(f.entrada)) && (!f.salida || isFinite(ms_(f.salida))); }); }
 function turnoAbiertoDe_(t, empleadoId) {
   for (let i = 0; i < t.filas.length; i++) if (String(t.filas[i].empleadoId) === String(empleadoId) && !t.filas[i].salida && isFinite(ms_(t.filas[i].entrada))) return t.filas[i];
   return null;
 }
 // Un turno que quedó abierto más del tope (el dueño olvidó cerrar la caja) se cierra en «entrada + tope» y queda marcado para revisión.
+// Ojo: escribe dentro de lecturas (miTurno, turnosAbiertos, turnosListar…). Es seguro porque doPost corre todo dentro del cerrojo.
 function cerrarVencidos_(t, ahora) {
   t.filas.forEach(function (f) {
     if (f.salida) return;
     const e = ms_(f.entrada);
-    if (isFinite(e) && ahora - e > TOPE_TURNO_MS) { f.salida = iso_(e + TOPE_TURNO_MS); f.cierre = 'tope'; escribirFila_(t, f.fila, f); }
+    if (isFinite(e) && ahora - e > TOPE_TURNO_MS) { f.salida = iso_(alMinuto_(e + TOPE_TURNO_MS)); f.cierre = 'tope'; escribirFila_(t, f.fila, f); }
   });
 }
 function registrarCambio_(quien, fichajeId, campo, antes, despues, motivo) {
@@ -354,7 +360,7 @@ function fichar_(q) {
   cerrarVencidos_(t, ahora);
   const abierto = turnoAbiertoDe_(t, q.empleado.id);
   if (abierto) return { ok: true, yaAbierto: true, ahora: iso_(ahora), turno: turnoPublico_(abierto, ahora) };
-  const f = { id: 'f' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), empleadoId: q.empleado.id, nombre: q.empleado.nombre, entrada: iso_(ahora), salida: '', cierre: '', nota: '', creado: iso_(ahora) };
+  const f = { id: 'f' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), empleadoId: q.empleado.id, nombre: q.empleado.nombre, entrada: iso_(alMinuto_(ahora)), salida: '', cierre: '', nota: '', creado: iso_(ahora) };
   agregarFila_(t, f);
   return { ok: true, yaAbierto: false, ahora: iso_(ahora), turno: turnoPublico_(f, ahora) };
 }
@@ -379,25 +385,36 @@ function turnosAbiertos_() {
   return { ok: true, ahora: iso_(ahora), abiertos: turnosValidos_(t).filter(function (f) { return !f.salida; }).map(function (f) { return turnoPublico_(f, ahora); }) };
 }
 
-// El cierre de caja marca la salida de todos los turnos abiertos. `cierreEn` (la hora del cierre en el teléfono del dueño) solo
-// sirve cuando la llamada se demoró por falta de red: nunca puede ser futura, y un turno que empezó DESPUÉS del cierre no se toca.
+// El cierre de caja marca la salida de todos los turnos abiertos. No se confía en la hora absoluta del teléfono del dueño: manda
+// `demoraMs` (cuánto tardó la llamada desde el cierre, medido en el teléfono; una diferencia no depende de su zona ni de su desfase).
+// La referencia = ahora − min(demoraMs, 7 días), con el reloj del script. Un turno que empezó DESPUÉS de la referencia no se toca.
+// Primero se aplica la referencia y solo después el tope de 16 h al resto, para que un cierre pendiente gane al «tope».
 function turnosCerrar_(p) {
   const ahora = Date.now();
   const t = tabla_(HOJA_FICHAJES, CAB_FICHAJES);
-  cerrarVencidos_(t, ahora);
-  const referencia = p.cierreEn == null ? NaN : ms_(p.cierreEn);
+  const d = p.demoraMs;
+  const referencia = typeof d === 'number' && isFinite(d) && d >= 0 ? ahora - Math.min(d, MAX_DEMORA_CIERRE_MS) : null;
   const cerrados = [];
   t.filas.forEach(function (f) {
     if (f.salida) return;
     const e = ms_(f.entrada);
     if (!isFinite(e)) return;
-    if (isFinite(referencia) && e > referencia) return;
-    const s = isFinite(referencia) && referencia <= ahora ? referencia : ahora;
-    f.salida = iso_(Math.max(e, s)); f.cierre = 'cierre';
+    if (referencia !== null && e > referencia) return;
+    f.salida = iso_(Math.max(e, alMinuto_(referencia === null ? ahora : referencia))); f.cierre = 'cierre';
     escribirFila_(t, f.fila, f);
     cerrados.push(turnoPublico_(f, ahora));
   });
+  cerrarVencidos_(t, ahora);
   return { ok: true, cerrados: cerrados };
+}
+
+// ¿Se cruza [e, s] con otro turno del mismo empleado? `excluirId` es el turno que se está corrigiendo (no choca consigo mismo).
+function chocaConOtro_(t, empleadoId, e, s, ahora, excluirId) {
+  return turnosValidos_(t).some(function (f) {
+    if (String(f.empleadoId) !== String(empleadoId) || (excluirId != null && String(f.id) === String(excluirId))) return false;
+    const fe = ms_(f.entrada), fs = f.salida ? ms_(f.salida) : ahora;
+    return e < fs && s > fe;
+  });
 }
 
 function turnosListar_(p) {
@@ -433,9 +450,13 @@ function fichajeCorregir_(p, quien) {
   if (!isFinite(e1) || (s1 !== null && !isFinite(s1))) return { ok: false, error: 'Las horas no son válidas' };
   if (e1 > ahora + TOLERANCIA_FUTURO_MS || (s1 !== null && s1 > ahora + TOLERANCIA_FUTURO_MS)) return { ok: false, error: 'Una hora no puede ser futura' };
   if (s1 !== null && s1 < e1) return { ok: false, error: 'La salida no puede ser antes de la entrada' };
+  if (e1 !== e0 && e1 < ahora - MAX_ANTIGUEDAD_MS) return { ok: false, error: 'La entrada no puede ser de hace más de 400 días' };
   if (e1 === e0 && s1 === s0) return { ok: false, error: 'No cambió nada' };
-  if (e1 !== e0) registrarCambio_(quien, f.id, 'entrada', iso_(e0), iso_(e1), motivo);
-  if (s1 !== s0) registrarCambio_(quien, f.id, 'salida', s0 === null ? '' : iso_(s0), s1 === null ? '' : iso_(s1), motivo);
+  // Poner la salida a un turno abierto es válido (queda con motivo y rastro); un turno abierto se mide hasta «ahora».
+  if (chocaConOtro_(t, f.empleadoId, e1, s1 === null ? ahora : s1, ahora, f.id)) return { ok: false, error: 'Ese turno se cruza con otro del mismo empleado' };
+  const antes = function (ms, crudo) { return ms === null ? '' : (isFinite(ms) ? iso_(ms) : String(crudo)); }; // una fila ilegible se registra tal cual estaba
+  if (e1 !== e0) registrarCambio_(quien, f.id, 'entrada', antes(e0, f.entrada), iso_(e1), motivo);
+  if (s1 !== s0) registrarCambio_(quien, f.id, 'salida', antes(s0, f.salida), s1 === null ? '' : iso_(s1), motivo);
   f.entrada = iso_(e1); f.salida = s1 === null ? '' : iso_(s1); f.cierre = 'corregido'; f.nota = motivo;
   escribirFila_(t, f.fila, f);
   return { ok: true, turno: turnoPublico_(f, ahora) };
@@ -449,15 +470,11 @@ function fichajeAgregar_(p, quien) {
   if (!isFinite(e) || !isFinite(s)) return { ok: false, error: 'Las horas no son válidas' };
   if (s < e) return { ok: false, error: 'La salida no puede ser antes de la entrada' };
   if (s > ahora + TOLERANCIA_FUTURO_MS) return { ok: false, error: 'Una hora no puede ser futura' };
+  if (e < ahora - MAX_ANTIGUEDAD_MS) return { ok: false, error: 'La entrada no puede ser de hace más de 400 días' };
   const emp = buscarEmpleado_(tabla_(HOJA_EMPLEADOS, CAB_EMPLEADOS), p.empleadoId);
   if (!emp) return { ok: false, error: 'No existe ese empleado' };
   const t = tabla_(HOJA_FICHAJES, CAB_FICHAJES);
-  const choca = turnosValidos_(t).some(function (f) {
-    if (String(f.empleadoId) !== String(emp.id)) return false;
-    const fe = ms_(f.entrada), fs = f.salida ? ms_(f.salida) : ahora;
-    return e < fs && s > fe;
-  });
-  if (choca) return { ok: false, error: 'Ese turno se cruza con otro del mismo empleado' };
+  if (chocaConOtro_(t, emp.id, e, s, ahora, null)) return { ok: false, error: 'Ese turno se cruza con otro del mismo empleado' };
   const f = { id: 'f' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), empleadoId: emp.id, nombre: emp.nombre, entrada: iso_(e), salida: iso_(s), cierre: 'manual', nota: motivo, creado: iso_(ahora) };
   agregarFila_(t, f);
   registrarCambio_(quien, f.id, 'agregado', '', iso_(e) + ' → ' + iso_(s), motivo);

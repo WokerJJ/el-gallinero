@@ -121,7 +121,7 @@ test('script · doPost rechaza una clave incorrecta y la clave por defecto', () 
 
 test('script · una acción desconocida responde «Acción desconocida» (la app lo usa para avisar de un script viejo)', () => {
   const s = cargarScript({ clave: 'k' });
-  assert.deepEqual(post(s, { clave: 'k', accion: 'inexistente' }), { ok: false, error: 'Acción desconocida' });
+  assert.deepEqual(post(s, { clave: 'k', accion: 'inexistente' }), { ok: false, error: 'Acción desconocida', codigo: 'accion_desconocida' });
 });
 
 /* ---------- guardar_: el contenido de cada pestaña (EVA-007) ---------- */
