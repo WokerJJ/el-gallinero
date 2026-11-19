@@ -117,7 +117,7 @@ test('entrada · el dueño entra con su clave: en su teléfono se compara sin in
   assert.equal(a.run('loginPendiente()'), true);
   await a.run("entrarDueno('', 'clave-1')");
   assert.equal(a.run('esDueno()'), true);
-  assert.equal(s.llamadas.length, 0, 'sin tocar la red');
+  assert.equal(s.llamadas.filter(l => l.accion === 'yo' || l.accion === 'login').length, 0, 'su clave no se valida en la red');
 });
 test('entrada · el dueño en un teléfono sin su clave guardada la valida con el script', async () => {
   const s = servidor();
@@ -409,7 +409,7 @@ test('revocación · mientras haya sesión de empleado se revalida cada cierto t
   const b = cargarApp({ fetch: d.fetch, seed: { ...syncDueno, ...acceso({ sesion: { rol: 'dueno' } }) } });
   b.run('REVALIDAR_MS = 15; vigilarSesion()');
   await esperar(60);
-  assert.equal(d.llamadas.length, 0, 'el dueño no usa token');
+  assert.equal(d.llamadas.filter(l => l.accion === 'yo' || l.token).length, 0, 'el dueño no revalida su sesión ni usa token (sí sincroniza con su clave)');
 });
 
 /* ---------- script anterior y errores del script (EVA-004) ---------- */

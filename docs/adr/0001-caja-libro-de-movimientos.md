@@ -14,7 +14,7 @@ El Gallinero necesita llevar el efectivo del negocio: lo que entra por ventas y 
 3. **Ids únicos y crecientes.** `nuevoId()` es un contador monótono; al cargar o restaurar, los ids repetidos de movimientos y cierres se renumeran (el primero conserva el suyo).
 4. **Un cierre por día.** El cierre compara lo contado con el saldo calculado y, si hay diferencia, la anota como ajuste. Cerrar de nuevo el mismo día es posible pero pide confirmación; la vista de un día pasado muestra el cierre guardado de ese día.
 5. **La caja solo cuenta desde que se activa**, con un saldo inicial. Lo vendido o comprado antes no tiene movimientos: anularlo no toca el efectivo y la app lo avisa.
-6. **Un solo dispositivo.** El estado completo se guarda de una vez en ese teléfono; con dos teléfonos, **gana el último que guarda** y el otro pierde sus movimientos.
+6. **Un solo dispositivo.** El estado completo se guarda de una vez en ese teléfono; con dos teléfonos, **gana el último que guarda** y el otro pierde sus movimientos. *Sustituido en parte por el ADR 0003: ya no gana el último; un envío con versión vieja se rechaza y se pregunta qué datos conservar.*
 7. **`por` = «Dueño».** Cada movimiento guarda quién lo registró, pero hasta que exista el login de empleados siempre es «Dueño».
 
 ## Consecuencias

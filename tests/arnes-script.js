@@ -52,6 +52,7 @@ class HojaFalsa {
       setFontWeight() { h.toques.push({ op: 'formato', ...rango }); return this; },
       setFontColor() { h.toques.push({ op: 'formato', ...rango }); return this; },
       getValues() { const o = []; recorrer((r, k, i, j) => { (o[i] ||= [])[j] = h.celdas.get(`${r},${k}`) ?? ''; }); return o; },
+      getValue() { return this.getValues()[0][0]; },
       getDisplayValues() { return this.getValues().map(fila => fila.map(String)); },
     };
   }

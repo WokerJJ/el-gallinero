@@ -111,11 +111,11 @@ test('login · un acierto antes del límite reinicia el contador de fallos', () 
 });
 
 /* ---------- permisos ---------- */
-test('permisos · un empleado no puede guardar, leer, traer clientes ni administrar empleados', () => {
+test('permisos · un empleado no puede traer clientes del Sheet ni administrar empleados', () => {
   const s = cargarScript();
   crear(s);
   const { token } = entrar(s);
-  for (const c of [{ accion: 'guardar', datos: datosMinimos }, { accion: 'leer' }, { accion: 'clientes' }, { accion: 'empleadoListar' },
+  for (const c of [{ accion: 'clientes' }, { accion: 'empleadoListar' },
     { accion: 'empleadoCrear', nombre: 'X', usuario: 'xxx', pin: '4829' }, { accion: 'empleadoPin', id: 'e1', pin: '4829' }, { accion: 'empleadoActivo', id: 'e1', activo: false }]) {
     const r = comoEmpleado(s, token, c);
     assert.equal(r.ok, false, c.accion);
@@ -124,7 +124,7 @@ test('permisos · un empleado no puede guardar, leer, traer clientes ni administ
   assert.equal(s.libro.get('_respaldo'), undefined, 'no se escribió el respaldo');
   assert.equal(duenoPost(s, { accion: 'empleadoListar' }).empleados.length, 1, 'no se creó nadie');
 });
-test('permisos · el empleado puede preguntar quién es, y el ping no revela datos del negocio', () => {
+test('permisos · el empleado puede preguntar quién es, y su ping no trae cifras del negocio', () => {
   const s = cargarScript();
   crear(s);
   duenoPost(s, { accion: 'guardar', datos: { ...datosMinimos, ventas: [{ id: 1 }], clientes: [{ id: 'c' }] } });
@@ -132,7 +132,9 @@ test('permisos · el empleado puede preguntar quién es, y el ping no revela dat
   const yo = comoEmpleado(s, token, { accion: 'yo' });
   assert.equal(yo.rol, 'empleado');
   assert.equal(yo.empleado.usuario, 'luis');
-  assert.deepEqual(plano(comoEmpleado(s, token, { accion: 'ping' })), { ok: true, rol: 'empleado' });
+  const ping = comoEmpleado(s, token, { accion: 'ping' });
+  assert.deepEqual(Object.keys(ping).sort(), ['actualizado', 'ok', 'rol', 'tieneDatos', 'version'], 'sin cantidad de ventas ni de clientes');
+  assert.match(ping.version, /^v[0-9a-z]+$/);
   assert.equal(duenoPost(s, { accion: 'ping' }).ventas, 1, 'al dueño sí le muestra el resumen');
 });
 test('permisos · el dueño sigue pudiendo todo y una acción inventada no existe para nadie', () => {
@@ -325,9 +327,9 @@ test('login · pasado el límite por minuto se rechaza con el mismo mensaje, sin
 /* ---------- EVA-007: ping del dueño y precedencia de credenciales ---------- */
 test('ping · la forma exacta de la respuesta del dueño, con datos y sin ellos', () => {
   const s = cargarScript();
-  assert.deepEqual(plano(duenoPost(s, { accion: 'ping' })), { ok: true, tieneDatos: false });
+  assert.deepEqual(plano(duenoPost(s, { accion: 'ping' })), { ok: true, tieneDatos: false, version: '' });
   duenoPost(s, { accion: 'guardar', datos: { ...datosMinimos, ventas: [{ id: 1 }], clientes: [{ id: 'c' }] } });
-  assert.deepEqual(Object.keys(duenoPost(s, { accion: 'ping' })).sort(), ['actualizado', 'clientes', 'ok', 'tieneDatos', 'ventas']);
+  assert.deepEqual(Object.keys(duenoPost(s, { accion: 'ping' })).sort(), ['actualizado', 'clientes', 'ok', 'tieneDatos', 'ventas', 'version']);
 });
 test('credenciales · clave mala con token válido es el empleado; token vencido con clave buena es el dueño; clave mala con token vencido avisa que venció', () => {
   const s = cargarScript();
@@ -357,4 +359,83 @@ test('login · lee la pestaña de sesiones una sola vez aunque haya vencidas que
   assert.equal(entrar(s).ok, true);
   assert.equal(lecturas, 1);
   assert.equal(ses.getLastRow(), 3, 'quedan la vigente y la nueva');
+});
+
+/* ---------- sincronización por turnos: comprobación de versión (ADR 0003) ---------- */
+const guardarCon = (s, base, extra = {}) => duenoPost(s, { accion: 'guardar', datos: { ...datosMinimos, ...extra }, ...(base === undefined ? {} : { base }) });
+const comoEmp = (s, token, c) => post(s, { token, ...c });
+
+test('versión · cada envío cambia la versión y leer devuelve la vigente', () => {
+  const s = cargarScript();
+  const a = guardarCon(s, '');
+  assert.equal(a.ok, true);
+  assert.match(a.version, /^v[0-9a-z]+$/);
+  const b = guardarCon(s, a.version);
+  assert.equal(b.ok, true);
+  assert.notEqual(b.version, a.version);
+  const l = duenoPost(s, { accion: 'leer' });
+  assert.equal(l.version, b.version);
+  assert.equal(duenoPost(s, { accion: 'ping' }).version, b.version);
+});
+test('versión · un envío con una versión vieja se rechaza y NO escribe nada', () => {
+  const s = cargarScript();
+  const a = guardarCon(s, '', { ventas: [{ id: 1 }] });
+  const b = guardarCon(s, a.version, { ventas: [{ id: 1 }, { id: 2 }] });     // otro teléfono guardó después
+  const antes = duenoPost(s, { accion: 'leer' }).texto;
+  const r = guardarCon(s, a.version, { ventas: [{ id: 9 }] });                  // este teléfono sigue con la versión a
+  assert.equal(r.ok, false);
+  assert.equal(r.conflicto, true);
+  assert.equal(r.version, b.version, 'devuelve la versión vigente para poder decidir');
+  assert.equal(duenoPost(s, { accion: 'leer' }).texto, antes, 'lo que había quedó intacto');
+  assert.equal(duenoPost(s, { accion: 'ping' }).version, b.version);
+});
+test('versión · un teléfono que nunca sincronizó no pisa un Sheet que ya tiene datos', () => {
+  const s = cargarScript();
+  guardarCon(s, '');
+  const r = guardarCon(s, '');
+  assert.equal(r.conflicto, true, 'base vacía contra datos existentes = conflicto');
+});
+test('versión · sin «base» (una app anterior) se guarda como siempre', () => {
+  const s = cargarScript();
+  const a = guardarCon(s, '');
+  assert.equal(guardarCon(s, undefined).ok, true);
+  assert.notEqual(duenoPost(s, { accion: 'ping' }).version, a.version);
+});
+test('versión · un Sheet con datos de un script anterior (sin versión) se ve como «v0» y obliga a decidir una vez', () => {
+  const s = cargarScript();
+  guardarCon(s);                                                  // sin base: queda con versión
+  s.libro.get('_respaldo').celdas.delete('7,2');                  // como lo dejaba el script de antes
+  assert.equal(duenoPost(s, { accion: 'ping' }).version, 'v0');
+  assert.equal(guardarCon(s, '').conflicto, true);
+  assert.equal(guardarCon(s, 'v0').ok, true);
+});
+test('versión · el empleado carga y guarda con la misma comprobación, y no ve cifras en su ping', () => {
+  const s = cargarScript();
+  crear(s);
+  const { token } = entrar(s);
+  const a = comoEmp(s, token, { accion: 'guardar', datos: datosMinimos, base: '' });
+  assert.equal(a.ok, true);
+  const l = comoEmp(s, token, { accion: 'leer' });
+  assert.equal(l.ok, true);
+  assert.equal(l.version, a.version);
+  assert.equal(comoEmp(s, token, { accion: 'guardar', datos: datosMinimos, base: 'v-vieja' }).conflicto, true);
+  assert.equal(comoEmp(s, token, { accion: 'clientes' }).prohibido, true, 'lo demás sigue siendo del dueño');
+});
+test('versión · el empleado que guarda deja una copia anterior para recuperar', () => {
+  const s = cargarScript();
+  crear(s);
+  const { token } = entrar(s);
+  const a = comoEmp(s, token, { accion: 'guardar', datos: { ...datosMinimos, ventas: [{ id: 1 }] }, base: '' });
+  comoEmp(s, token, { accion: 'guardar', datos: { ...datosMinimos, ventas: [] }, base: a.version });
+  assert.ok(s.libro.get('_respaldo_anterior'), 'queda la generación anterior');
+  assert.match(s.libro.get('_respaldo_anterior').celda(1, 1), /"id":1/);
+});
+test('versión · dos envíos seguidos con la misma base: gana el primero, el segundo es conflicto (el cerrojo los ordena)', () => {
+  const s = cargarScript();
+  const a = guardarCon(s, '');
+  const x = guardarCon(s, a.version, { ventas: [{ id: 1 }] });
+  const y = guardarCon(s, a.version, { ventas: [{ id: 2 }] });
+  assert.equal(x.ok, true);
+  assert.equal(y.conflicto, true);
+  assert.match(duenoPost(s, { accion: 'leer' }).texto, /"id":1/);
 });
