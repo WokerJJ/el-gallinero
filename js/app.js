@@ -1502,8 +1502,8 @@ function htmlMiTurno() {
   const min = t ? Math.max(0, Math.floor((Date.now() + miTurnoDesfase - Date.parse(t.entrada)) / 60000)) : 0;
   const hoy = `<p class="muted">Hoy: ${fmtHM(miTurno.hoyMin)} · Esta semana: ${fmtHM(miTurno.semanaMin)}</p>`;
   return t
-    ? `<div class="stat teal"><div class="n">${fmtHM(min)}</div><div class="l">Trabajando desde las ${esc(horaCo(t.entrada))}</div></div><p class="muted lead">Tu salida se marca cuando el dueño cierra la caja.</p>${hoy}`
-    : `<button class="btn btn-teal" data-act="turno-entrar">Entrar a trabajar</button>${hoy}`;
+    ? `<div class="stat teal turno-activo" role="status"><div class="n">${fmtHM(min)}</div><div class="l">Trabajando desde las ${esc(horaCo(t.entrada))}</div></div><p class="muted lead">Tu salida se marca cuando el dueño cierra la caja.</p>${hoy}`
+    : `<button class="btn btn-teal btn-big turno-entrar" data-act="turno-entrar">Entrar a trabajar</button>${hoy}`;
 }
 const pintarMiTurno = () => { const el = $('#mi-turno'); if (el) el.innerHTML = `<h3>Mi turno</h3>${htmlMiTurno()}`; };
 async function cargarMiTurno() {
@@ -1542,22 +1542,22 @@ async function cargarHoras() {
   } finally { horasCargando = false; }
   if (vistaActual === 'horas') repintar();
 }
-const etiquetaTurno = t => (t.abierto ? '<span class="badge ok">En curso</span>' : t.cierre === 'tope' ? '<span class="badge out">Revisar: tope de 16 h</span>' : t.cierre === 'corregido' ? '<span class="badge low">Corregido</span>' : t.cierre === 'manual' ? '<span class="badge low">Agregado</span>' : '');
+const etiquetaTurno = t => (t.abierto ? '<span class="badge ok">En curso</span>' : t.cierre === 'tope' ? '<span class="badge out">Revisar: tope de 16 h</span>' : t.cierre === 'corregido' ? '<span class="badge low">Corregido</span>' : t.cierre === 'manual' ? '<span class="badge man">Agregado</span>' : '');
 VISTAS.horas = () => {
   const d = horasDatos;
-  const tabs = [['hoy', 'Hoy'], ['semana', 'Esta semana'], ['mes', 'Este mes']].map(([k, t]) => `<button class="btn btn-sm ${k === horasRango ? '' : 'btn-ghost'}" data-act="horas-rango" data-k="${k}" aria-pressed="${k === horasRango}">${t}</button>`).join(' ');
+  const tabs = [['hoy', 'Hoy'], ['semana', 'Esta semana'], ['mes', 'Este mes']].map(([k, t]) => `<button class="seg-btn" data-act="horas-rango" data-k="${k}" aria-pressed="${k === horasRango}">${t}</button>`).join('');
   const totales = horasError ? `<div class="alert danger">${esc(horasError)}</div>` : !d ? '<p class="muted">Cargando…</p>'
     : !d.totales.length ? '<p class="empty">Nadie fichó en este rango.</p>'
     : `<div class="list">${d.totales.map(t => `<div class="row"><div class="main"><div class="t">${esc(t.nombre)}</div></div><div class="r"><strong>${fmtHM(t.minutos)}</strong></div></div>`).join('')}</div>`;
   const turnos = d && d.turnos.length
-    ? `<div class="list">${d.turnos.map(t => `<div class="row"><div class="main"><div class="t">${esc(t.nombre)} ${etiquetaTurno(t)}</div><div class="s">${esc(diaCo(t.entrada))} · ${esc(horaCo(t.entrada))} – ${t.abierto ? 'sigue trabajando' : esc(horaCo(t.salida))}</div></div>
+    ? `<div class="list">${d.turnos.map(t => `<div class="row${t.cierre === 'tope' && !t.abierto ? ' turno-revisar' : ''}"><div class="main"><div class="t">${esc(t.nombre)} ${etiquetaTurno(t)}</div><div class="s">${esc(diaCo(t.entrada))} · ${esc(horaCo(t.entrada))} – ${t.abierto ? 'sigue trabajando' : esc(horaCo(t.salida))}</div></div>
         <div class="r"><strong>${fmtHM(t.minutos)}</strong> <button class="btn btn-sm btn-ghost" data-act="horas-corregir" data-id="${esc(t.id)}">Corregir</button></div></div>`).join('')}</div>` : '<p class="empty">Sin turnos en este rango.</p>';
   return `
     ${cabecera('Horas del equipo', 'mas')}
     ${!(sync && sync.listo) ? '<div class="card"><p class="muted">Las horas viven en tu Google Sheet. Conéctalo primero en Más → Google Sheets.</p></div>' : `
-    <div class="card"><h3>Horas por persona</h3><div class="btn-row">${tabs}</div>${totales}</div>
+    <div class="card"><h3>Horas por persona</h3><div class="seg seg-botones seg-3" role="group" aria-label="Rango de fechas">${tabs}</div>${totales}</div>
     <div class="card"><h3>Turnos</h3>${turnos}
-      <div class="btn-row"><button class="btn btn-ghost" data-act="horas-agregar">+ Agregar un turno olvidado</button><button class="btn btn-ghost" data-act="horas-recargar">Actualizar</button></div></div>`}
+      <div class="btn-row"><button class="btn btn-sun" data-act="horas-agregar">+ Agregar un turno olvidado</button><button class="btn btn-ghost" data-act="horas-recargar">Actualizar</button></div></div>`}
     <div class="card"><h3>Cómo se cuentan</h3>
       <p class="muted">El empleado ficha su entrada desde su teléfono (la hora la pone el servidor). <strong>La salida se marca cuando tú cierras la caja.</strong> No se descuentan descansos y las horas son en minutos exactos, en hora de Colombia. Un turno que queda abierto más de 16 horas se cierra solo y aparece para revisar. Cada corrección queda con su motivo.</p></div>`;
 };

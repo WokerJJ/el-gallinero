@@ -414,3 +414,31 @@ details.datos .tbl td.num { white-space: nowrap; }
 .row .s .badge { white-space: normal; margin-left: 2px; }
 @media (max-width: 420px) { .row:has(.emp-acc) { flex-direction: column; align-items: stretch; } .emp-acc { max-width: none; justify-content: flex-start; } .emp-acc .btn { flex: 1; } }
 @media (prefers-reduced-motion: no-preference) { .seg-btn { transition: background-color .16s cubic-bezier(.2,.7,.2,1), color .16s cubic-bezier(.2,.7,.2,1); } }
+
+/* ---------- Reloj de horas ---------- */
+/* Mi turno: el botón de entrada es lo primero que toca el empleado; el turno abierto se distingue por forma (marca + borde grueso), no solo por color. */
+.turno-entrar { min-height: 64px; font-size: 1.2rem; margin-top: 0; margin-bottom: 12px; }
+.stat.turno-activo { border-width: 3px; border-color: var(--teal); margin-bottom: 12px; }
+.stat.turno-activo .n { font-size: 2rem; color: var(--teal); }
+.stat.turno-activo .l { display: flex; align-items: center; gap: 8px; font-size: .9rem; font-weight: 700; color: var(--ink); }
+.stat.turno-activo .l::before { content: "\2713"; flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--teal); color: #fff; font-size: .8rem; font-weight: 800; }
+#mi-turno .muted:last-child { margin-bottom: 0; }
+/* Horas del equipo: selector de tres opciones, turnos que piden revisión y etiquetas distinguibles. */
+.seg.seg-3 { grid-template-columns: repeat(3, 1fr); }
+.seg-3 .seg-btn { font-size: .92rem; padding-left: 4px; padding-right: 4px; }
+.badge.man { background: #fff; border-style: dashed; }
+.badge.out { background: var(--red); color: #fff; border-color: var(--red); }
+.badge.out::before { content: "\26A0\00a0"; }
+.row .t .badge { margin-left: 4px; white-space: normal; }
+.row.turno-revisar { background: var(--danger-bg); border-left: 5px solid var(--red); margin-left: -4px; padding-left: 10px; padding-right: 8px; border-radius: 0 8px 8px 0; }
+.row .r .btn-sm { margin-top: 6px; }
+@media (max-width: 420px) { .row:has(.btn-sm[data-act="horas-corregir"]) .r { display: flex; flex-direction: column; align-items: flex-end; } }
+/* Campos de fecha y hora: que no se desborden en iPhone y que los textos largos de los diálogos se partan. */
+.field input[type="datetime-local"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; text-align: left; }
+.field input[type="datetime-local"]::-webkit-date-and-time-value { text-align: left; min-height: 1.5em; }
+.sheet-text { overflow-wrap: anywhere; }
+.sheet-text + .btn-row { margin-top: 16px; }
+@media (prefers-reduced-motion: no-preference) {
+  .stat.turno-activo .l::before { animation: turno-pulso 2.4s cubic-bezier(.4,0,.2,1) infinite; }
+  @keyframes turno-pulso { 0%, 100% { box-shadow: 0 0 0 0 rgba(36,95,80,.35); } 50% { box-shadow: 0 0 0 5px rgba(36,95,80,0); } }
+}
