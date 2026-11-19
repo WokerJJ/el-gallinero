@@ -14,7 +14,7 @@ const remoto = ventas => ({ app: 'el-gallinero', version: 3, ...cargarApp({ seed
 
 function sheetVivo({ datos = null, version = 'v1', soporta = true } = {}) {
   let texto = datos ? JSON.stringify(datos) : null, ver = version, n = 10;
-  const s = { falla: false, llamadas: [] };
+  const s = { falla: false, llamadas: [], retraso: null, retrasoGuardar: null }; // retraso: promesa que hace esperar a «leer»
   s.fetch = async (url, op) => {
     const c = JSON.parse(op.body);
     s.llamadas.push(c);
@@ -22,8 +22,10 @@ function sheetVivo({ datos = null, version = 'v1', soporta = true } = {}) {
     if (c.accion === 'login') return c.usuario === 'luis' && c.pin === '4829' ? ok({ ok: true, token: TOKEN, vence: '2099-01-01T00:00:00.000Z', empleado: { id: 'e1', usuario: 'luis', nombre: 'Luis Pérez' } }) : ok({ ok: false, error: 'Usuario o PIN incorrecto, o la cuenta está bloqueada' });
     if (c.accion === 'yo') return ok({ ok: true, rol: c.token ? 'empleado' : 'dueno' });
     if (c.accion === 'ping') return ok(texto ? { ok: true, tieneDatos: true, ventas: 0, clientes: 0, actualizado: 'x', ...(soporta ? { version: ver } : {}) } : { ok: true, tieneDatos: false, ...(soporta ? { version: '' } : {}) });
+    if (c.accion === 'leer' && s.retraso) await s.retraso;
     if (c.accion === 'leer') return texto ? ok({ ok: true, texto, ...(soporta ? { version: ver } : {}) }) : ok({ ok: false, error: 'El Sheet todavía no tiene datos guardados' });
     if (c.accion === 'guardar') {
+      if (s.retrasoGuardar) { const r = s.retrasoGuardar; s.retrasoGuardar = null; await r; }
       if (s.falla) throw new Error('Failed to fetch');
       if (soporta && typeof c.base === 'string' && c.base !== ver) return ok({ ok: false, conflicto: true, error: 'El Sheet cambió desde tu última carga', version: ver });
       texto = JSON.stringify(c.datos); ver = 'v' + (++n);
@@ -56,6 +58,19 @@ test('al abrir · si otro guardó en el Sheet y aquí no hay nada sin enviar, se
   assert.equal(cuantas(s, 'guardar'), 0, 'lo recién cargado no se vuelve a enviar');
   assert.ok(a.store.has('eg_prev'), 'queda una copia de lo que había');
   assert.match(a.toasts().at(-1).texto, /al día desde el Sheet/);
+});
+test('al abrir · una venta registrada mientras llega la lectura del Sheet no se pierde: se pregunta (BUG-001)', async () => {
+  const s = sheetVivo({ datos: remoto([venta, venta2]), version: 'v2' });
+  let soltar; s.retraso = new Promise(r => { soltar = r; });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: 'v1' }) } });
+  await esperar(40);
+  assert.equal(cuantas(s, 'leer'), 1, 'la lectura está en vuelo');
+  a.run('aplicar(() => { ventas.push({ ...ventas[0], id: 1700000000000009 }); })');
+  soltar();
+  await esperar(60);
+  assert.ok(a.run('ventas.some(v => v.id === 1700000000000009)'), 'la venta sigue ahí');
+  assert.match(textoHoja(a), /El Sheet cambió/, 'se pregunta en vez de pisar');
+  assert.equal(a.run('sync.pendiente'), true);
 });
 test('al abrir · si el Sheet no cambió desde la última carga no se lee nada', async () => {
   const s = sheetVivo({ datos: remoto([venta, venta2]), version: 'v1' });
@@ -209,6 +224,10 @@ test('cerrar la caja · si no llega al Sheet avisa con claridad; el cierre queda
   await p;
   assert.equal(a.run('cierres.length'), 1, 'el cierre quedó registrado');
   assert.equal(a.run('sync.pendiente'), true, 'se reintentará solo');
+  s.falla = false; // vuelve la red: el reintento envía el cierre
+  assert.equal(await a.run('enviarSheet(false)'), true);
+  assert.equal(a.run('sync.pendiente'), false);
+  assert.equal(JSON.parse(s.estado().texto).cierres.length, 1);
 });
 test('cerrar la caja · si otro guardó antes, pregunta qué datos conservar en vez de pisar al otro', async () => {
   const s = sheetVivo({ datos: remoto([]), version: 'v1' });
@@ -256,6 +275,157 @@ test('empleado · lo que vende en su teléfono se envía con su token, y sin ses
   assert.equal(a.run('credencial()'), null);
   const antes = cuantas(s, 'guardar');
   a.run('programarSync()');
-  assert.equal(a.run('sync.pendiente'), false, 'sin sesión no se programa nada');
+  assert.equal(a.run('sync.pendiente'), true, 'sin sesión queda pendiente y no se envía nada');
   assert.equal(cuantas(s, 'guardar'), antes);
+});
+
+/* ---------- correcciones de la revisión ---------- */
+const VENTA_NUEVA = 'aplicar(() => { ventas.push({ ...ventas[0], id: 1700000000000009 }); })';
+test('al abrir · un teléfono que nunca sincronizó pero ya tiene datos pregunta antes de cargar encima (BUG-002)', async () => {
+  const s = sheetVivo({ datos: remoto([venta, venta2]), version: 'v2' });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: '', ultimo: null }) } });
+  await esperar(60);
+  assert.match(textoHoja(a), /El Sheet cambió/);
+  assert.equal(a.run('ventas.length'), 1, 'no se tocó');
+  assert.equal(cuantas(s, 'leer'), 0);
+});
+test('al abrir · un teléfono que nunca sincronizó y está vacío carga solo; el del dueño ya conectado (con último envío) también', async () => {
+  const s = sheetVivo({ datos: remoto([venta, venta2]), version: 'v2' });
+  const vacio = cargarApp({ fetch: s.fetch, seed: sync0({ base: '', ultimo: null }) });
+  await esperar(60);
+  assert.equal(vacio.run('ventas.length'), 2);
+  assert.ok(!vacio.hoja());
+  const conectado = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: '', ultimo: '2026-01-01T00:00:00.000Z' }) } });
+  await esperar(60);
+  assert.equal(conectado.run('ventas.length'), 2);
+  assert.ok(!conectado.hoja());
+});
+test('enviar · si se guarda algo mientras viaja el envío, queda pendiente (no se da por enviado)', async () => {
+  const s = sheetVivo({ datos: remoto([venta]), version: 'v1' });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: 'v1' }) } });
+  await esperar(40);
+  let soltar; s.retrasoGuardar = new Promise(r => { soltar = r; });
+  const p = a.run('enviarSheet(false)');
+  a.run(VENTA_NUEVA);
+  soltar();
+  assert.equal(await p, true);
+  assert.equal(a.run('sync.pendiente'), true, 'la venta nueva aún no está en el Sheet');
+});
+test('empleado · el dueño que entra en un teléfono creado por un empleado sincroniza con su clave (BUG-003)', async () => {
+  const s = sheetVivo({ datos: remoto([venta]), version: 'v1' });
+  const a = cargarApp({ fetch: s.fetch, seed: { eg_acceso: { exigir: true, url: URL_OK, sesion: null } } });
+  await a.run("entrarEmpleado('', 'luis', '4829')");
+  await esperar(60);
+  await a.run('cerrarSesion()');
+  a.run('pintarEstadoSync()');
+  assert.match(a.q('#sync-estado').textContent, /Entra/, 'sin sesión la pantalla dice que hay que entrar');
+  await a.run("entrarDueno('', 'mi-clave')");
+  await esperar(60);
+  assert.equal(a.run('sync.clave'), 'mi-clave');
+  assert.equal(a.run('credencial().clave'), 'mi-clave');
+  a.run(VENTA_NUEVA);
+  assert.equal(await a.run('enviarSheet(false)'), true);
+  const g = s.llamadas.filter(l => l.accion === 'guardar').at(-1);
+  assert.equal(g.clave, 'mi-clave');
+  assert.equal(JSON.parse(s.estado().texto).ventas.length, 2);
+});
+test('empleado · lo guardado sin sesión queda pendiente para enviarse al entrar', async () => {
+  const s = sheetVivo({ datos: remoto([venta]), version: 'v1' });
+  const a = cargarApp({ fetch: s.fetch, seed: { eg_acceso: { exigir: true, url: URL_OK, sesion: null } } });
+  await a.run("entrarEmpleado('', 'luis', '4829')");
+  await esperar(60);
+  await a.run('cerrarSesion()');
+  a.run('guardar()');
+  assert.equal(a.run('sync.pendiente'), true);
+});
+test('conectar · si el Sheet ya tiene datos y se elige los de este teléfono, hay un solo diálogo y un solo guardado (EVA-006)', async () => {
+  const s = sheetVivo({ datos: remoto([venta, venta2]), version: 'v4' });
+  const a = cargarApp({ fetch: s.fetch, seed: sembrar({ ventas: [venta] }) });
+  const p = a.run(`conectarSheet('${URL_OK}', 'mi-clave')`);
+  await elegirOpcion(a, 1);
+  await p;
+  await esperar(40);
+  assert.ok(!a.hoja(), 'no sale un segundo diálogo de conflicto');
+  assert.equal(cuantas(s, 'guardar'), 1);
+  assert.equal(JSON.parse(s.estado().texto).ventas.length, 1);
+  assert.equal(a.run('sync.conflicto'), false);
+});
+test('conflicto · con otra hoja abierta no la reemplaza: el diálogo sale al cerrarla (BUG-004)', async () => {
+  const s = sheetVivo({ datos: remoto([venta]), version: 'v1' });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: 'v1' }) } });
+  await esperar(40);
+  s.poner(remoto([venta, venta2]), 'v9');
+  a.run("hoja('Gasto', '<p>formulario a medias</p>')");
+  assert.equal(await a.run('enviarSheet(false)'), false);
+  await esperar(20);
+  assert.match(textoHoja(a), /formulario a medias/, 'el formulario sigue');
+  assert.ok(!/El Sheet cambió/.test(textoHoja(a)));
+  assert.equal(a.run('sync.conflicto'), true, 'queda marcado');
+  a.run('cerrarHoja()');
+  await esperar(20);
+  assert.match(textoHoja(a), /El Sheet cambió/);
+});
+test('conflicto · dos disparos seguidos abren un solo diálogo', async () => {
+  const s = sheetVivo({ datos: remoto([venta]), version: 'v1' });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: 'v1', pendiente: true }) } });
+  await esperar(40);
+  a.run('globalThis.__dialogos = 0; elegir = (orig => (...x) => { globalThis.__dialogos++; return orig(...x); })(elegir)');
+  a.run("resolverConflicto('v9'); resolverConflicto('v9')");
+  await esperar(20);
+  assert.equal(a.run('globalThis.__dialogos'), 1);
+});
+test('cerrar la caja · con un envío automático en vuelo espera a que termine y reintenta, sin alarmar (BUG-005)', async () => {
+  const s = sheetVivo({ datos: remoto([]), version: 'v1' });
+  const a = conCaja(s);
+  await esperar(40);
+  let soltar; s.retrasoGuardar = new Promise(r => { soltar = r; });
+  a.run('enviarSheet(false)');
+  const p = cerrar(a, 100000);
+  await esperar(30);
+  soltar();
+  await p;
+  await esperar(30);
+  assert.ok(!/El cierre no llegó/.test(textoHoja(a)), 'no hay falsa alarma');
+  assert.equal(JSON.parse(s.estado().texto).cierres.length, 1, 'el cierre llegó al Sheet');
+  assert.equal(a.run('sync.pendiente'), false);
+});
+test('cerrar la caja · si choca con el Sheet, el diálogo avisa de que «los del Sheet» perderían el cierre', async () => {
+  const s = sheetVivo({ datos: remoto([]), version: 'v1' });
+  const a = conCaja(s);
+  await esperar(40);
+  s.poner(remoto([venta]), 'v9');
+  cerrar(a, 100000);
+  await esperar(80);
+  assert.match(textoHoja(a), /cierre de caja que acabas de hacer se perderá/);
+});
+test('enviar · tras un envío manual sin cambios nuevos no queda un segundo guardado programado (EVA-011)', async () => {
+  const s = sheetVivo({ datos: remoto([venta]), version: 'v1' });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: 'v1' }) } });
+  await esperar(40);
+  a.run(VENTA_NUEVA);
+  assert.equal(await a.run('enviarSheet(true)'), true);
+  await esperar(4400);
+  assert.equal(cuantas(s, 'guardar'), 1, 'un solo guardado');
+});
+test('cargar · un respaldo del Sheet que no se puede aplicar avisa una sola vez por sesión en la carga automática (EVA-011)', async () => {
+  const malo = { ...remoto([venta]), ventas: [{ id: 'x' }] };
+  const s = sheetVivo({ datos: malo, version: 'v2' });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({}), ...sync0({ base: 'v1' }) } });
+  a.run('globalThis.__errores = 0; aviso = (o => (...x) => { if (x[1]) globalThis.__errores++; return o(...x); })(aviso)');
+  await esperar(60);
+  await a.run('traerDelSheet({ auto: true })');
+  await a.run('traerDelSheet({ auto: true })');
+  assert.equal(cuantas(s, 'leer'), 3, 'se intentó tres veces');
+  assert.equal(a.run('globalThis.__errores'), 1, 'pero el aviso salió una sola vez');
+});
+test('cargar manual · mientras se espera la confirmación no se frena el envío de lo nuevo (EVA-011)', async () => {
+  const s = sheetVivo({ datos: remoto([venta, venta2]), version: 'v2' });
+  const a = cargarApp({ fetch: s.fetch, seed: { ...sembrar({ ventas: [venta] }), ...sync0({ base: 'v2' }) } });
+  await esperar(40);
+  const p = a.run('traerDelSheet()');
+  await esperar(30);
+  assert.match(textoHoja(a), /Restaurar/);
+  assert.equal(a.run('sinEnviar'), false);
+  a.run('cerrarHoja()');
+  await p;
 });
